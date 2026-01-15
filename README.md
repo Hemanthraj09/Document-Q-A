@@ -6,6 +6,10 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green?logo=fastapi&logoColor=white)
 ![LangFlow](https://img.shields.io/badge/LangFlow-RAG-purple)
 
+## 🔄 Pipeline Architecture
+
+![LangFlow RAG Pipeline](pipeline.png)
+
 ## ✨ Features
 
 - **📤 PDF Upload** — Extract text from PDF documents automatically
