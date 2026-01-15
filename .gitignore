@@ -18,6 +18,7 @@ ENV/
 .idea/
 *.swp
 *.swo
+*.code-workspace
 
 # Project specific
 uploads/
