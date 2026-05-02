@@ -34,6 +34,33 @@
             --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
         }
 
+        .graph-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: var(--bg-main);
+            z-index: 9999;
+            flex-direction: column;
+        }
+        .graph-overlay.active { display: flex; }
+    .graph-overlay-header {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--bg-card);
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+    }
+
+        .graph-overlay-body {
+            flex: 1;
+            overflow: hidden;
+        }
+
         body {
             font-family: 'Inter', sans-serif;
             background: var(--bg-main);
@@ -608,7 +635,10 @@
                 <div class="insight-card">
                     <div class="insight-header">
                         <span>🕸️ Topic Graph</span>
-                        <span class="insight-badge" id="topicCount">waiting...</span>
+                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                            <span class="insight-badge" id="topicCount">waiting...</span>
+                            <button id="fullscreenGraphBtn" title="Fullscreen" style="background:transparent; border:1px solid var(--border); color:var(--text-secondary); border-radius:4px; padding:2px 6px; cursor:pointer; font-size:11px;">⛶</button>
+                        </div>
                     </div>
                     <div id="studyPriority" style="padding: 4px 14px; font-size: 0.75rem; color: #93c5fd; font-style: italic;"></div>
                     <div class="insight-body" id="topicGraph">
@@ -618,26 +648,22 @@
 
                 <div class="insight-card">
                     <div class="insight-header">
-                        <span>📊 Key Topics</span>
+                        <span>📊Important Keywords Across Document</span>
                     </div>
                     <div class="insight-body" id="topicChart">
                         <div class="insight-placeholder">Topic rankings will appear here</div>
                     </div>
                 </div>
-
-                <div class="insight-card">
-                    <div class="insight-header">
-                        <span>📝 Summary</span>
-                    </div>
-                    <div class="insight-body" id="summarySection">
-                        <button class="summarize-btn" id="summarizeBtn">✨ Generate AI Summary</button>
-                        <div id="summaryContent"></div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
-
+    <div class="graph-overlay" id="graphOverlay">
+        <div class="graph-overlay-header">
+            <span>🕸️ Topic Graph — Fullscreen</span>
+            <button id="closeGraphOverlay" style="background:transparent; border:1px solid var(--border); color:var(--text-secondary); border-radius:4px; padding:4px 10px; cursor:pointer; font-size:12px;">✕ Close</button>
+        </div>
+        <div class="graph-overlay-body" id="graphOverlayBody"></div>
+    </div>
     <script>
         // ===========================
         // === State
@@ -794,13 +820,6 @@
             // Reset insights to loading state
             document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Analyzing topics...</div>';
             document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Building chart...</div>';
-            document.getElementById('topicCount').textContent = 'analyzing...';
-            document.getElementById('summaryContent').innerHTML = '';
-            const sumBtn = document.getElementById('summarizeBtn');
-            sumBtn.style.display = 'block';
-            sumBtn.disabled = false;
-            sumBtn.textContent = '✨ Generate AI Summary';
-
             // Trigger document analysis
             analyzeDocument();
         }
@@ -971,10 +990,13 @@
                         document.getElementById('topicCount').textContent = '0 topics';
                         return;
                     }
-
                     // Store for LLM merge
                     currentTopics = data.topics;
                     currentEdges = data.edges;
+
+                    // Store for fullscreen
+                    window._lastTopics = data.topics;
+                    window._lastEdges = data.edges;
 
                     // Render TF-IDF results immediately
                     document.getElementById('topicCount').textContent = `${data.topics.length} topics`;
@@ -1046,7 +1068,9 @@
                                 // Update graph with merged topics
                                 currentTopics = data.topics;
                                 document.getElementById('topicCount').textContent = `${data.topics.length} topics ✨`;
-                                renderTopicGraph(data.topics, data.edges || currentEdges);
+                                window._lastTopics = data.topics;
+                                window._lastEdges = data.edges;
+                                renderTopicGraph(data.topics, data.edges);
                                 renderTopicChart(data.topics);
 
                                 if (data.study_priority) {
@@ -1071,21 +1095,30 @@
         // ===========================
         // === D3 Topic Graph
         // ===========================
-        function renderTopicGraph(topics, edges) {
-            const container = document.getElementById('topicGraph');
+       function renderTopicGraphIn(container, topics, edges) {
             container.innerHTML = '';
 
-            const width = container.clientWidth || 380;
-            const height = Math.max(280, Math.min(420, topics.length * 20));
+            const isFullscreen = container.id === 'graphOverlayBody';
+            const width = container.clientWidth || (isFullscreen ? window.innerWidth : 380);
+            const height = isFullscreen
+                ? (container.clientHeight || window.innerHeight - 60)
+                : Math.max(280, Math.min(420, topics.length * 20));
 
-            const svg = d3.select('#topicGraph')
-                .append('svg')
-                .attr('width', '100%')
-                .attr('height', height)
-                .attr('viewBox', `0 0 ${width} ${height}`);
+            const svg = d3.select(container)
+            .append('svg')
+            .attr('width', '100%')
+            .attr('height', height)
+            .attr('viewBox', `0 0 ${width} ${height}`)
+            .call(d3.zoom()
+                .scaleExtent([0.3, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                }));
 
+            const g = svg.append('g');
+            
             // Glow filter for core concepts
-            const defs = svg.append('defs');
+            const defs = g.append('defs');
             const filter = defs.append('filter').attr('id', 'glow');
             filter.append('feGaussianBlur').attr('stdDeviation', '3.5').attr('result', 'coloredBlur');
             const feMerge = filter.append('feMerge');
@@ -1122,15 +1155,17 @@
 
             // Force simulation
             const simulation = d3.forceSimulation(nodes)
-                .force('link', d3.forceLink(links).id(d => d.id).distance(70).strength(0.5))
-                .force('charge', d3.forceManyBody().strength(-180))
-                .force('center', d3.forceCenter(width / 2, height / 2))
-                .force('collision', d3.forceCollide().radius(d => d.radius + 8))
-                .force('x', d3.forceX(width / 2).strength(0.06))
-                .force('y', d3.forceY(height / 2).strength(0.06));
+                .force('link', d3.forceLink(links).id(d => d.id).distance(120).strength(0.2))
+                .force('charge', d3.forceManyBody().strength(-350).distanceMax(300))
+                .force('center', d3.forceCenter(width / 2, height / 2).strength(0.05))
+                .force('collision', d3.forceCollide().radius(d => d.radius + 18).strength(0.9))
+                .force('x', d3.forceX(width / 2).strength(0.03))
+                .force('y', d3.forceY(height / 2).strength(0.03))
+                .velocityDecay(0.6)
+                .alphaDecay(0.02);
 
             // Links — thickness based on co-occurrence weight
-            const link = svg.selectAll('.graph-link')
+            const link = g.selectAll('.graph-link')
                 .data(links)
                 .enter().append('line')
                 .attr('class', 'graph-link')
@@ -1138,7 +1173,7 @@
                 .style('stroke-opacity', d => 0.3 + d.weight * 0.5);
 
             // Nodes
-            const node = svg.selectAll('.graph-node')
+            const node = g.selectAll('.graph-node')
                 .data(nodes)
                 .enter().append('g')
                 .attr('class', 'graph-node')
@@ -1235,7 +1270,8 @@
             });
 
             // Legend
-            const legend = svg.append('g').attr('transform', `translate(8, ${height - 50})`);
+            if(isFullscreen){
+            const legend = g.append('g').attr('transform', `translate(8, ${height - 50})`);
             [['core', '#3b82f6', '● Core'], ['supporting', '#eab308', '● Support'], ['minor', '#6b7280', '● Minor']].forEach(([, color, label], i) => {
                 legend.append('text')
                     .attr('x', i * 70)
@@ -1245,6 +1281,10 @@
                     .text(label);
             });
         }
+    }
+        function renderTopicGraph(topics, edges) {
+            renderTopicGraphIn(document.getElementById('topicGraph'), topics, edges);
+    }
 
         // ===========================
         // === D3 Bar Chart
@@ -1339,49 +1379,31 @@
                 .append('title')
                 .text(d => d.term);
         }
+        document.getElementById('fullscreenGraphBtn').addEventListener('click', () => {
+    const overlay = document.getElementById('graphOverlay');
+    const overlayBody = document.getElementById('graphOverlayBody');
+    overlay.classList.add('active');
+    
+    // Re-render graph in overlay at full screen size
+    overlayBody.innerHTML = '';
+    if (window._lastTopics && window._lastEdges) {
+        renderTopicGraphIn(overlayBody, window._lastTopics, window._lastEdges);
+    }
+});
 
-        // ===========================
-        // === AI Summary
-        // ===========================
-        document.getElementById('summarizeBtn').addEventListener('click', generateSummary);
+document.getElementById('closeGraphOverlay').addEventListener('click', () => {
+    document.getElementById('graphOverlay').classList.remove('active');
+});
 
-        async function generateSummary() {
-            const btn = document.getElementById('summarizeBtn');
-            const content = document.getElementById('summaryContent');
-
-            btn.disabled = true;
-            btn.textContent = '⏳ Lexo is summarizing...';
-            content.innerHTML = '<div style="text-align: center; padding: 0.5rem;"><div class="loading"></div></div>';
-
-            const prompt = `Summarize the following document in 5-7 concise bullet points. Focus on the main themes, key arguments, and important takeaways:\n---\n${documentContext.substring(0, 6000)}\n---\n\nProvide a clear, well-structured summary.`;
-
-            try {
-                const response = await fetch('/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        question: prompt,
-                        session_id: sessionId,
-                        doc_id: docId
-                    })
-                });
-
-                const data = await response.json();
-
-                if (response.ok) {
-                    content.innerHTML = `<div class="summary-text">${escapeHtml(data.answer)}</div>`;
-                    btn.style.display = 'none';
-                } else {
-                    content.innerHTML = '<div class="summary-text" style="color: var(--error);">Failed to generate summary.</div>';
-                    btn.disabled = false;
-                    btn.textContent = '✨ Retry Summary';
-                }
-            } catch (error) {
-                content.innerHTML = '<div class="summary-text" style="color: var(--error);">Connection error. Is Ollama running?</div>';
-                btn.disabled = false;
-                btn.textContent = '✨ Retry Summary';
-            }
-        }
+// Close on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        document.getElementById('graphOverlay').classList.remove('active');
+    }
+});
     </script>
 </body>
 </html>
+
+
+
