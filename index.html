@@ -3,18 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Q&A - LangFlow Chat</title>
+    <title>Visual Document Q&A</title>
+    <meta name="description" content="Upload documents and explore topics visually with AI-powered Q&A">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
-            /* Monochrome Minimalist Theme */
             --primary: #3b82f6;
             --primary-hover: #2563eb;
             --primary-light: rgba(59, 130, 246, 0.1);
+            --accent: #8b5cf6;
+            --accent-light: rgba(139, 92, 246, 0.15);
             --bg-main: #0a0a0a;
             --bg-card: #141414;
             --bg-elevated: #1a1a1a;
@@ -38,9 +41,9 @@
             min-height: 100vh;
         }
 
+        /* ===== Landing Page ===== */
         .container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
 
-        /* Landing Page */
         .landing {
             min-height: 90vh;
             display: flex;
@@ -49,11 +52,10 @@
             justify-content: center;
             text-align: center;
         }
-
         .landing.hidden { display: none; }
 
-        .logo { 
-            font-size: 3rem; 
+        .logo {
+            font-size: 3rem;
             margin-bottom: 1rem;
             width: 72px;
             height: 72px;
@@ -74,7 +76,12 @@
             letter-spacing: -0.02em;
         }
 
-        .subtitle { color: var(--text-secondary); font-size: 1.1rem; margin-bottom: 2.5rem; font-weight: 400; }
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            margin-bottom: 2.5rem;
+            font-weight: 400;
+        }
 
         .input-options {
             display: grid;
@@ -92,7 +99,6 @@
             transition: all 0.2s ease;
             box-shadow: var(--shadow-sm);
         }
-
         .input-card:hover {
             border-color: var(--border-hover);
             box-shadow: var(--shadow-md);
@@ -125,13 +131,11 @@
             margin-bottom: 1rem;
             transition: border-color 0.2s ease;
         }
-
-        #textInput:focus { 
-            outline: none; 
+        #textInput:focus {
+            outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 3px var(--primary-light);
         }
-
         #textInput::placeholder { color: var(--text-muted); }
 
         .upload-zone {
@@ -147,20 +151,18 @@
             justify-content: center;
             background: var(--bg-input);
         }
-
-        .upload-zone:hover { 
-            border-color: var(--primary); 
-            background: var(--primary-light); 
+        .upload-zone:hover {
+            border-color: var(--primary);
+            background: var(--primary-light);
         }
-        
-        .upload-zone.dragover { 
-            border-color: var(--primary); 
+        .upload-zone.dragover {
+            border-color: var(--primary);
             background: var(--primary-light);
             border-style: solid;
         }
 
-        .upload-icon { 
-            font-size: 1.75rem; 
+        .upload-icon {
+            font-size: 1.75rem;
             margin-bottom: 0.5rem;
             opacity: 0.7;
         }
@@ -178,61 +180,102 @@
             transition: all 0.2s ease;
             width: 100%;
         }
-
-        .btn:hover:not(:disabled) { 
+        .btn:hover:not(:disabled) {
             background: var(--primary-hover);
             box-shadow: var(--shadow-md);
         }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        /* Chat Page */
-        .chat-page { display: none; min-height: 100vh; background: var(--bg-main); }
+        /* ===== Chat Page ===== */
+        .chat-page { display: none; height: 100vh; background: var(--bg-main); }
         .chat-page.active { display: flex; flex-direction: column; }
 
+        /* Header */
         .chat-header {
-            padding: 1rem 2rem;
+            padding: 0.65rem 1.25rem;
             border-bottom: 1px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: center;
             background: var(--bg-card);
+            gap: 1rem;
+            flex-shrink: 0;
         }
 
-        .chat-title { 
-            font-size: 1rem; 
-            font-weight: 600; 
-            display: flex; 
-            align-items: center; 
+        .chat-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
             gap: 0.5rem;
             color: var(--text-primary);
+            white-space: nowrap;
         }
-        
+
+        .header-tabs {
+            display: none;
+            gap: 0.25rem;
+            background: var(--bg-elevated);
+            padding: 3px;
+            border-radius: 8px;
+        }
+
+        .tab-btn {
+            padding: 0.35rem 0.75rem;
+            background: transparent;
+            color: var(--text-secondary);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .tab-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+
         .btn-back {
-            padding: 0.5rem 1rem;
+            padding: 0.4rem 0.875rem;
             background: transparent;
             color: var(--text-secondary);
             border: 1px solid var(--border);
             border-radius: 6px;
             cursor: pointer;
             font-family: inherit;
-            font-size: 0.875rem;
+            font-size: 0.8rem;
             transition: all 0.2s ease;
+            white-space: nowrap;
         }
-
-        .btn-back:hover { 
-            border-color: var(--border-hover); 
+        .btn-back:hover {
+            border-color: var(--border-hover);
             color: var(--text-primary);
             background: var(--bg-elevated);
         }
 
-        .chat-container {
+        /* Workspace — split panel */
+        .workspace {
             flex: 1;
-            max-width: 900px;
-            width: 100%;
-            margin: 0 auto;
+            display: flex;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        /* Chat panel */
+        .chat-panel {
+            flex: 1;
             display: flex;
             flex-direction: column;
-            padding: 1rem;
+            min-width: 0;
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
         }
 
         .messages {
@@ -241,93 +284,90 @@
             padding: 1rem;
             display: flex;
             flex-direction: column;
-            gap: 1rem;
+            gap: 0.75rem;
         }
 
-        .message { display: flex; gap: 0.75rem; animation: fadeIn 0.3s ease; }
+        .message {
+            display: flex;
+            gap: 0.6rem;
+            animation: fadeIn 0.3s ease;
+        }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(8px); }
+            from { opacity: 0; transform: translateY(6px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
         .message-avatar {
-            width: 36px;
-            height: 36px;
+            width: 30px;
+            height: 30px;
             border-radius: 8px;
             display: flex;
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
-            font-size: 1rem;
+            font-size: 0.85rem;
             background: var(--bg-elevated);
             border: 1px solid var(--border);
         }
-
-        .user-avatar { 
+        .user-avatar {
             background: var(--primary);
             border-color: var(--primary);
         }
-        .ai-avatar { 
+        .ai-avatar {
             background: var(--bg-elevated);
         }
 
         .message-content {
             flex: 1;
             background: var(--bg-card);
-            padding: 0.875rem 1rem;
+            padding: 0.65rem 0.875rem;
             border-radius: 8px;
             border: 1px solid var(--border);
             line-height: 1.6;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             white-space: pre-wrap;
             color: var(--text-primary);
         }
-
-        .message-content.error { 
-            border-color: var(--error); 
-            background: rgba(239, 68, 68, 0.1); 
+        .message-content.error {
+            border-color: var(--error);
+            background: rgba(239, 68, 68, 0.1);
         }
-        .message-content.context { 
-            border-color: var(--border); 
-            background: var(--bg-elevated); 
-            font-size: 0.8rem;
+        .message-content.context {
+            border-color: var(--border);
+            background: var(--bg-elevated);
+            font-size: 0.78rem;
             color: var(--text-secondary);
         }
 
         .input-area {
-            padding: 1rem;
+            padding: 0.65rem 0.875rem;
             border-top: 1px solid var(--border);
             background: var(--bg-card);
-            border-radius: 12px;
-            margin: 0.5rem;
-            box-shadow: var(--shadow-sm);
+            flex-shrink: 0;
         }
-
-        .input-wrapper { display: flex; gap: 0.75rem; }
+        .input-wrapper { display: flex; gap: 0.5rem; }
 
         #messageInput {
             flex: 1;
-            padding: 0.75rem 1rem;
+            padding: 0.6rem 0.75rem;
             background: var(--bg-input);
             border: 1px solid var(--border);
             border-radius: 8px;
             color: var(--text-primary);
             font-family: inherit;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             transition: border-color 0.2s ease;
         }
-
-        #messageInput:focus { 
-            outline: none; 
+        #messageInput:focus {
+            outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 3px var(--primary-light);
         }
-
         #messageInput::placeholder { color: var(--text-muted); }
 
         .send-btn {
-            padding: 0.75rem 1.25rem;
+            padding: 0.6rem 1rem;
             background: var(--primary);
             color: white;
             border: none;
@@ -335,15 +375,135 @@
             font-weight: 500;
             cursor: pointer;
             font-family: inherit;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             transition: all 0.2s ease;
         }
-
-        .send-btn:hover:not(:disabled) { 
-            background: var(--primary-hover);
-        }
+        .send-btn:hover:not(:disabled) { background: var(--primary-hover); }
         .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+        .status {
+            text-align: center;
+            padding: 0.3rem;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            flex-shrink: 0;
+        }
+        .status.connected { color: var(--success); }
+        .status.disconnected { color: var(--error); }
+
+        /* ===== Insights Panel ===== */
+        .insights-panel {
+            width: 420px;
+            max-width: 420px;
+            border-left: 1px solid var(--border);
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            background: var(--bg-main);
+            flex-shrink: 0;
+            box-sizing: border-box;
+        }
+
+        .insight-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            transition: border-color 0.2s ease;
+        }
+        .insight-card:hover {
+            border-color: var(--border-hover);
+        }
+
+        .insight-header {
+            padding: 0.55rem 0.875rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .insight-badge {
+            font-size: 0.68rem;
+            padding: 0.1rem 0.45rem;
+            background: var(--primary-light);
+            color: var(--primary);
+            border-radius: 10px;
+            font-weight: 600;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .insight-body {
+            padding: 0.625rem;
+            min-height: 50px;
+        }
+
+        .insight-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            min-height: 80px;
+        }
+
+        /* Graph styles */
+        .graph-node { cursor: pointer; }
+        .graph-node circle {
+            transition: stroke-width 0.15s ease, filter 0.15s ease;
+        }
+        .graph-node:hover circle {
+            stroke-width: 3px;
+            filter: brightness(1.4);
+        }
+        .graph-node text {
+            pointer-events: none;
+            user-select: none;
+        }
+        .graph-link {
+            stroke: rgba(255, 255, 255, 0.07);
+        }
+
+        /* Summary */
+        .summarize-btn {
+            width: 100%;
+            padding: 0.55rem;
+            font-size: 0.8rem;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: inherit;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .summarize-btn:hover:not(:disabled) {
+            background: var(--primary-light);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .summarize-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .summary-text {
+            font-size: 0.8rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+        }
+
+        /* Loading */
         .loading {
             display: inline-block;
             width: 14px;
@@ -352,26 +512,36 @@
             border-top-color: var(--primary);
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
-            margin-right: 0.5rem;
+            margin-right: 0.4rem;
         }
-
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        .status { 
-            text-align: center; 
-            padding: 0.5rem; 
-            font-size: 0.75rem; 
-            color: var(--text-muted);
-            font-weight: 500;
-        }
-        .status.connected { color: var(--success); }
-        .status.disconnected { color: var(--error); }
-
-        /* Scrollbar styling */
-        ::-webkit-scrollbar { width: 6px; }
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+        /* ===== Responsive ===== */
+        @media (max-width: 900px) {
+            .header-tabs { display: flex; }
+
+            .workspace { flex-direction: column; }
+
+            .insights-panel {
+                display: none;
+                width: 100%;
+                border-left: none;
+                border-top: 1px solid var(--border);
+                flex: 1;
+            }
+            .insights-panel.mobile-active {
+                display: flex;
+            }
+            .chat-panel.mobile-hidden {
+                display: none;
+            }
+        }
 
         @media (max-width: 700px) {
             .input-options { grid-template-columns: 1fr; }
@@ -384,8 +554,8 @@
     <!-- Landing Page -->
     <div class="container landing" id="landing">
         <div class="logo">📄</div>
-        <h1>Document Q&A</h1>
-        <p class="subtitle">Powered by LangFlow RAG Pipeline</p>
+        <h1>Visual Document Q&A</h1>
+        <p class="subtitle">Intelligent document analysis with visual insights</p>
 
         <div class="input-options">
             <div class="input-card">
@@ -410,47 +580,139 @@
     <!-- Chat Page -->
     <div class="chat-page" id="chatPage">
         <div class="chat-header">
-            <div class="chat-title">💬 Document Q&A</div>
+            <div class="chat-title">✨ Lexo — Document Analyst</div>
+            <div class="header-tabs" id="headerTabs">
+                <button class="tab-btn active" id="chatTabBtn">💬 Chat</button>
+                <button class="tab-btn" id="insightsTabBtn">🔍 Insights</button>
+            </div>
             <button class="btn-back" id="backBtn">← New Document</button>
         </div>
 
-        <div class="chat-container">
-            <div class="messages" id="messages"></div>
-
-            <div class="input-area">
-                <div class="input-wrapper">
-                    <input type="text" id="messageInput" placeholder="Ask a question about the document..." autofocus>
-                    <button class="send-btn" id="sendBtn">Send</button>
+        <div class="workspace">
+            <!-- Left: Chat -->
+            <div class="chat-panel" id="chatPanel">
+                <div class="chat-container">
+                    <div class="messages" id="messages"></div>
+                    <div class="input-area">
+                        <div class="input-wrapper">
+                            <input type="text" id="messageInput" placeholder="Ask a question about the document..." autofocus>
+                            <button class="send-btn" id="sendBtn">Send</button>
+                        </div>
+                    </div>
+                    <div class="status" id="status"></div>
                 </div>
             </div>
 
-            <div class="status" id="status"></div>
+            <!-- Right: Insights -->
+            <div class="insights-panel" id="insightsPanel">
+                <div class="insight-card">
+                    <div class="insight-header">
+                        <span>🕸️ Topic Graph</span>
+                        <span class="insight-badge" id="topicCount">waiting...</span>
+                    </div>
+                    <div id="studyPriority" style="padding: 4px 14px; font-size: 0.75rem; color: #93c5fd; font-style: italic;"></div>
+                    <div class="insight-body" id="topicGraph">
+                        <div class="insight-placeholder">Upload a document to see topic analysis</div>
+                    </div>
+                </div>
+
+                <div class="insight-card">
+                    <div class="insight-header">
+                        <span>📊 Key Topics</span>
+                    </div>
+                    <div class="insight-body" id="topicChart">
+                        <div class="insight-placeholder">Topic rankings will appear here</div>
+                    </div>
+                </div>
+
+                <div class="insight-card">
+                    <div class="insight-header">
+                        <span>📝 Summary</span>
+                    </div>
+                    <div class="insight-body" id="summarySection">
+                        <button class="summarize-btn" id="summarizeBtn">✨ Generate AI Summary</button>
+                        <div id="summaryContent"></div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
+        // ===========================
+        // === State
+        // ===========================
         let sessionId = null;
         let documentContext = '';
+        let documentHeadings = [];
+        let documentHeadingLevels = [];
+        let docId = null;
 
+        // ===========================
+        // === DOM References
+        // ===========================
         const landing = document.getElementById('landing');
         const chatPage = document.getElementById('chatPage');
         const messages = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
         const status = document.getElementById('status');
+        const chatPanel = document.getElementById('chatPanel');
+        const insightsPanel = document.getElementById('insightsPanel');
 
-        // Text analysis
-        document.getElementById('analyzeTextBtn').addEventListener('click', () => {
+        // ===========================
+        // === Tab Switching (mobile)
+        // ===========================
+        document.getElementById('chatTabBtn').addEventListener('click', () => switchTab('chat'));
+        document.getElementById('insightsTabBtn').addEventListener('click', () => switchTab('insights'));
+
+        function switchTab(tab) {
+            document.getElementById('chatTabBtn').classList.toggle('active', tab === 'chat');
+            document.getElementById('insightsTabBtn').classList.toggle('active', tab === 'insights');
+
+            if (tab === 'chat') {
+                chatPanel.classList.remove('mobile-hidden');
+                insightsPanel.classList.remove('mobile-active');
+            } else {
+                chatPanel.classList.add('mobile-hidden');
+                insightsPanel.classList.add('mobile-active');
+            }
+        }
+
+        // ===========================
+        // === Text Analysis
+        // ===========================
+        document.getElementById('analyzeTextBtn').addEventListener('click', async () => {
             const text = document.getElementById('textInput').value.trim();
             if (text.length < 20) {
                 alert('Please enter at least 20 characters of text.');
                 return;
             }
             documentContext = text;
-            startChat('Text content loaded');
+            documentHeadings = [];
+
+            // Ingest into RAG pipeline
+            try {
+                const res = await fetch('/ingest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, headings: [] })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    docId = data.doc_id;
+                    startChat(`Text indexed: ${data.chunks_count} chunks`);
+                } else {
+                    throw new Error('Failed to index text');
+                }
+            } catch (err) {
+                alert('Error indexing text: ' + err.message);
+            }
         });
 
-        // File upload
+        // ===========================
+        // === File Upload
+        // ===========================
         const uploadZone = document.getElementById('uploadZone');
         const fileInput = document.getElementById('fileInput');
 
@@ -462,32 +724,46 @@
 
         async function handleFile(file) {
             if (!file) return;
-            
+
             uploadZone.innerHTML = '<div class="loading"></div> Reading file...';
-            
+
             try {
                 if (file.name.endsWith('.txt')) {
                     const text = await file.text();
                     documentContext = text;
+                    documentHeadings = [];
                     startChat(`File loaded: ${file.name}`);
                 } else if (file.name.endsWith('.pdf')) {
-                    // Upload PDF to backend for text extraction
                     const formData = new FormData();
                     formData.append('file', file);
-                    
+
                     const response = await fetch('/upload-pdf', {
                         method: 'POST',
                         body: formData
                     });
-                    
+
                     if (!response.ok) {
                         const error = await response.json();
                         throw new Error(error.detail || 'PDF upload failed');
                     }
-                    
+
                     const data = await response.json();
+
+                    // Warn if backend detected issues with the PDF
+                    if (data.warning) {
+                        alert(`⚠️ ${data.warning}`);
+                    }
+
+                    if (!data.text || data.text.trim().length === 0) {
+                        throw new Error('No readable text found in this PDF. It may be a scanned or image-only document.');
+                    }
+
                     documentContext = data.text;
-                    startChat(`PDF loaded: ${file.name} (${data.pages} pages, ${data.chars} chars)`);
+                    documentHeadings = data.headings || [];
+                    documentHeadingLevels = data.heading_levels || [];
+                    docId = data.doc_id || null;
+                    const chunksInfo = data.chunks_count ? ` → ${data.chunks_count} chunks indexed` : '';
+                    startChat(`PDF loaded: ${file.name} (${data.pages} pages${chunksInfo})`);
                 } else {
                     throw new Error('Please upload a PDF or TXT file.');
                 }
@@ -497,34 +773,56 @@
             }
         }
 
+        // ===========================
+        // === Start Chat Session
+        // ===========================
         function startChat(contextMessage) {
             landing.classList.add('hidden');
             chatPage.classList.add('active');
             messages.innerHTML = '';
-            // Generate a completely unique UUID-style session ID to force LangFlow to start fresh
-            // This prevents any context bleeding from previous documents
             sessionId = crypto.randomUUID();
-            
+
             // Show context indicator
-            addMessage('system', `📎 ${contextMessage} (${documentContext.length > 100 ? documentContext.length + ' chars' : 'ready'})`);
-            addMessage('ai', 'Document loaded! Ask me any questions about the content.');
-            
-            status.textContent = '✓ Ready';
+            addMessage('system', `📎 ${contextMessage}`);
+
+            addMessage('ai', `Hey! I'm **Lexo** — your document analyst ✨\n\nI've indexed your document and I'm ready to answer any questions. I'll find the most relevant sections and give you detailed explanations.\n\nCheck the **Insights panel** on the right for a visual topic map!`);
+
+            status.textContent = '✓ Lexo ready';
             status.className = 'status connected';
             messageInput.focus();
+
+            // Reset insights to loading state
+            document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Analyzing topics...</div>';
+            document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Building chart...</div>';
+            document.getElementById('topicCount').textContent = 'analyzing...';
+            document.getElementById('summaryContent').innerHTML = '';
+            const sumBtn = document.getElementById('summarizeBtn');
+            sumBtn.style.display = 'block';
+            sumBtn.disabled = false;
+            sumBtn.textContent = '✨ Generate AI Summary';
+
+            // Trigger document analysis
+            analyzeDocument();
         }
 
-        // Back button
+        // ===========================
+        // === Back Button
+        // ===========================
         document.getElementById('backBtn').addEventListener('click', () => {
             chatPage.classList.remove('active');
             landing.classList.remove('hidden');
             document.getElementById('textInput').value = '';
             document.getElementById('uploadZone').innerHTML = '<div class="upload-icon">📁</div><div style="color: var(--text-secondary); font-size: 0.85rem;">Drag & drop PDF here<br>or click to browse</div>';
             documentContext = '';
-            sessionId = null;  // Force a new session for the next document
+            documentHeadings = [];
+            sessionId = null;
+            docId = null;
+            switchTab('chat');
         });
 
-        // Send message
+        // ===========================
+        // === Chat Messaging
+        // ===========================
         sendBtn.addEventListener('click', sendMessage);
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -538,35 +836,66 @@
             messageInput.value = '';
             sendBtn.disabled = true;
 
-            const loadingId = addMessage('ai', '<div class="loading"></div> Thinking...', true);
-
-            // Always include document context with every question
-            // This ensures LangFlow always has the correct context
-            const fullQuestion = `Based on this document:\n---\n${documentContext.substring(0, 4000)}\n---\n\nQuestion: ${question}`;
+            // Create a streaming AI message
+            const aiMsgId = addMessage('ai', '', false, false, true);
+            const aiContent = document.querySelector(`#${aiMsgId} .message-content`);
+            status.textContent = '⏳ Lexo is thinking...';
+            status.className = 'status';
 
             try {
-                const response = await fetch('/chat', {
+                const response = await fetch('/chat-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: fullQuestion, session_id: sessionId })
+                    body: JSON.stringify({ question, session_id: sessionId, doc_id: docId })
                 });
 
-                const data = await response.json();
-                document.getElementById(loadingId)?.remove();
-
-                if (response.ok) {
-                    sessionId = data.session_id;
-                    addMessage('ai', data.answer);
-                    status.textContent = '✓ Connected';
-                    status.className = 'status connected';
-                } else {
-                    addMessage('ai', `Error: ${data.detail || 'Unknown error'}`, false, true);
+                if (!response.ok) {
+                    const err = await response.json();
+                    aiContent.textContent = `Error: ${err.detail || 'Unknown error'}`;
+                    aiContent.classList.add('error');
                     status.textContent = '✗ Error';
                     status.className = 'status disconnected';
+                    sendBtn.disabled = false;
+                    return;
                 }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const text = decoder.decode(value, { stream: true });
+                    const lines = text.split('\n');
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.token) {
+                                fullText += data.token;
+                                aiContent.textContent = fullText;
+                                messages.scrollTop = messages.scrollHeight;
+                            }
+                            if (data.session_id) {
+                                sessionId = data.session_id;
+                            }
+                            if (data.error) {
+                                fullText += data.error;
+                                aiContent.textContent = fullText;
+                                aiContent.classList.add('error');
+                            }
+                        } catch (e) { /* skip malformed SSE */ }
+                    }
+                }
+
+                status.textContent = '✓ Lexo ready';
+                status.className = 'status connected';
             } catch (error) {
-                document.getElementById(loadingId)?.remove();
-                addMessage('ai', 'Failed to connect. Is LangFlow running on port 7860?', false, true);
+                aiContent.textContent = 'Failed to connect. Is Ollama running?';
+                aiContent.classList.add('error');
                 status.textContent = '✗ Connection failed';
                 status.className = 'status disconnected';
             }
@@ -575,27 +904,32 @@
             messageInput.focus();
         }
 
-        function addMessage(sender, text, isLoading = false, isError = false) {
-            const id = 'msg-' + Date.now();
+        // ===========================
+        // === Message Rendering
+        // ===========================
+        function addMessage(sender, text, isLoading = false, isError = false, isStreaming = false) {
+            const id = 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
             const div = document.createElement('div');
             div.className = 'message';
             div.id = id;
 
             let avatar, avatarClass, contentClass;
-            
+
             if (sender === 'system') {
                 avatar = '📎';
                 avatarClass = '';
                 contentClass = 'message-content context';
             } else {
-                avatar = sender === 'user' ? '👤' : '🤖';
+                avatar = sender === 'user' ? '👤' : '✨';
                 avatarClass = sender === 'user' ? 'user-avatar' : 'ai-avatar';
                 contentClass = isError ? 'message-content error' : 'message-content';
             }
 
+            const displayText = isStreaming ? '' : (isLoading ? text : escapeHtml(text));
+
             div.innerHTML = `
                 <div class="message-avatar ${avatarClass}">${avatar}</div>
-                <div class="${contentClass}">${isLoading ? text : escapeHtml(text)}</div>
+                <div class="${contentClass}">${displayText}</div>
             `;
 
             messages.appendChild(div);
@@ -607,6 +941,446 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Store current analysis data for LLM merge
+        let currentTopics = [];
+        let currentEdges = [];
+
+        async function analyzeDocument() {
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: documentContext,
+                        headings: documentHeadings,
+                        heading_levels: documentHeadingLevels
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+
+                    console.log('[TOPICS] TF-IDF response:', data.topics.length, 'topics,', data.edges.length, 'edges');
+
+                    if (data.topics.length === 0) {
+                        console.log('[TOPICS] No topics returned');
+                        document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder">Not enough content to analyze</div>';
+                        document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder">Not enough content</div>';
+                        document.getElementById('topicCount').textContent = '0 topics';
+                        return;
+                    }
+
+                    // Store for LLM merge
+                    currentTopics = data.topics;
+                    currentEdges = data.edges;
+
+                    // Render TF-IDF results immediately
+                    document.getElementById('topicCount').textContent = `${data.topics.length} topics`;
+                    renderTopicGraph(data.topics, data.edges);
+                    renderTopicChart(data.topics);
+
+                    if (data.study_priority) {
+                        const priorityEl = document.getElementById('studyPriority');
+                        if (priorityEl) priorityEl.textContent = data.study_priority;
+                    }
+
+                    // Fire async LLM refinement in background
+                    refineTopisWithLLM();
+
+                } else {
+                    document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder">Analysis unavailable</div>';
+                    document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder">Analysis unavailable</div>';
+                    document.getElementById('topicCount').textContent = 'error';
+                }
+            } catch (error) {
+                console.error('Analysis failed:', error);
+                document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder">Analysis failed</div>';
+                document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder">Analysis failed</div>';
+                document.getElementById('topicCount').textContent = 'error';
+            }
+        }
+
+        async function refineTopisWithLLM() {
+            const badge = document.getElementById('topicCount');
+            const origText = badge.textContent;
+            badge.textContent = `${origText} ✨ refining...`;
+
+            try {
+                const response = await fetch('/analyze-llm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: documentContext,
+                        existing_topics: currentTopics,
+                        existing_edges: currentEdges
+                    })
+                });
+
+                if (!response.ok) {
+                    console.log('[LLM] Request failed, keeping TF-IDF');
+                    badge.textContent = origText;
+                    return;
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep incomplete line
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            console.log('[LLM] Response:', data.status);
+
+                            if (data.status === 'success' && data.topics) {
+                                // Update graph with merged topics
+                                currentTopics = data.topics;
+                                document.getElementById('topicCount').textContent = `${data.topics.length} topics ✨`;
+                                renderTopicGraph(data.topics, data.edges || currentEdges);
+                                renderTopicChart(data.topics);
+
+                                if (data.study_priority) {
+                                    const priorityEl = document.getElementById('studyPriority');
+                                    if (priorityEl) priorityEl.textContent = data.study_priority;
+                                }
+                                console.log(`[LLM] Graph updated with ${data.topics.length} merged topics`);
+                            } else {
+                                // Fallback — keep TF-IDF graph as is
+                                badge.textContent = origText;
+                                console.log('[LLM] Fallback:', data.reason);
+                            }
+                        } catch (e) { /* skip malformed SSE */ }
+                    }
+                }
+            } catch (error) {
+                console.log('[LLM] Connection error, keeping TF-IDF:', error.message);
+                badge.textContent = origText;
+            }
+        }
+
+        // ===========================
+        // === D3 Topic Graph
+        // ===========================
+        function renderTopicGraph(topics, edges) {
+            const container = document.getElementById('topicGraph');
+            container.innerHTML = '';
+
+            const width = container.clientWidth || 380;
+            const height = Math.max(280, Math.min(420, topics.length * 20));
+
+            const svg = d3.select('#topicGraph')
+                .append('svg')
+                .attr('width', '100%')
+                .attr('height', height)
+                .attr('viewBox', `0 0 ${width} ${height}`);
+
+            // Glow filter for core concepts
+            const defs = svg.append('defs');
+            const filter = defs.append('filter').attr('id', 'glow');
+            filter.append('feGaussianBlur').attr('stdDeviation', '3.5').attr('result', 'coloredBlur');
+            const feMerge = filter.append('feMerge');
+            feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+            feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+            // Tier-based color scheme
+            const tierColor = (tier) => {
+                if (tier === 'core') return '#3b82f6';       // Blue
+                if (tier === 'supporting') return '#eab308';  // Yellow
+                return '#6b7280';                             // Grey
+            };
+            const tierStroke = (tier) => {
+                if (tier === 'core') return '#60a5fa';
+                if (tier === 'supporting') return '#fbbf24';
+                return '#9ca3af';
+            };
+
+            // Prepare nodes with importance-based sizing
+            const nodes = topics.map(t => ({
+                id: t.term,
+                score: t.score,
+                spread: t.spread || 0,
+                centrality: t.centrality || 0,
+                tier: t.tier || 'minor',
+                is_heading: t.is_heading,
+                radius: (6 + t.score * 20) * 1.2 // Increased by 20%
+            }));
+
+            const nodeIds = new Set(nodes.map(n => n.id));
+            const links = edges
+                .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+                .map(e => ({ source: e.source, target: e.target, weight: e.weight }));
+
+            // Force simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links).id(d => d.id).distance(70).strength(0.5))
+                .force('charge', d3.forceManyBody().strength(-180))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => d.radius + 8))
+                .force('x', d3.forceX(width / 2).strength(0.06))
+                .force('y', d3.forceY(height / 2).strength(0.06));
+
+            // Links — thickness based on co-occurrence weight
+            const link = svg.selectAll('.graph-link')
+                .data(links)
+                .enter().append('line')
+                .attr('class', 'graph-link')
+                .style('stroke-width', d => 1 + d.weight * 5)
+                .style('stroke-opacity', d => 0.3 + d.weight * 0.5);
+
+            // Nodes
+            const node = svg.selectAll('.graph-node')
+                .data(nodes)
+                .enter().append('g')
+                .attr('class', 'graph-node')
+                .call(d3.drag()
+                    .on('start', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0.3).restart();
+                        d.fx = d.x; d.fy = d.y;
+                    })
+                    .on('drag', (event, d) => {
+                        d.fx = event.x; d.fy = event.y;
+                    })
+                    .on('end', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0);
+                        d.fx = null; d.fy = null;
+                    }));
+
+            node.append('circle')
+                .attr('r', d => d.radius)
+                .style('fill', d => tierColor(d.tier))
+                .style('stroke', d => tierStroke(d.tier))
+                .style('stroke-width', d => d.tier === 'core' ? 2.5 : 1.5)
+                .style('opacity', d => d.tier === 'minor' ? 0.6 : 0.85)
+                .style('filter', d => d.tier === 'core' ? 'url(#glow)' : 'none');
+
+            const texts = node.append('text')
+                .attr('dy', d => d.radius + 12)
+                .style('fill', d => d.tier === 'core' ? '#93c5fd' : d.tier === 'supporting' ? '#fde68a' : '#9ca3af')
+                .style('font-size', d => d.tier === 'core' ? '10.5px' : '9px')
+                .style('font-weight', d => d.tier === 'core' ? '600' : '400');
+                
+            texts.each(function(d) {
+                const el = d3.select(this);
+                const words = d.id.split(' ');
+                let line1 = '';
+                let line2 = '';
+                
+                if (d.id.length <= 12 || words.length === 1) {
+                    line1 = d.id.length > 12 ? d.id.substring(0, 10) + '…' : d.id;
+                } else {
+                    let tempLine = words[0];
+                    let i = 1;
+                    while (i < words.length && (tempLine + ' ' + words[i]).length <= 12) {
+                        tempLine += ' ' + words[i];
+                        i++;
+                    }
+                    line1 = tempLine;
+                    let rest = words.slice(i).join(' ');
+                    line2 = rest.length > 12 ? rest.substring(0, 10) + '…' : rest;
+                }
+                
+                el.append('tspan').attr('class', 'line1').attr('x', 0).text(line1);
+                if (line2) {
+                    el.append('tspan').attr('class', 'line2').attr('x', 0).attr('dy', 12).text(line2);
+                }
+            });
+
+            // Tooltip with rich info
+            node.append('title')
+                .text(d => `${d.id}\nImportance: ${(d.score * 100).toFixed(0)}%\nSpread: ${(d.spread * 100).toFixed(0)}% of sections\nCentrality: ${(d.centrality * 100).toFixed(0)}%\nTier: ${d.tier}${d.is_heading ? ' (heading)' : ''}`);
+
+            // Click to fill chat input
+            node.on('click', (event, d) => {
+                messageInput.value = `What does the document say about "${d.id}"?`;
+                messageInput.focus();
+                if (window.innerWidth <= 900) switchTab('chat');
+            });
+
+            // Tick — constrain to bounds
+            simulation.on('tick', () => {
+                nodes.forEach(d => {
+                    const padding = d.radius + 20; // Account for larger labels
+                    d.x = Math.max(padding, Math.min(width - padding, d.x));
+                    d.y = Math.max(padding, Math.min(height - padding, d.y));
+                });
+
+                link
+                    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+                
+                // Dynamic text anchoring
+                node.selectAll('text').attr('text-anchor', d => {
+                    if (d.x > width - 50) return 'end';
+                    if (d.x < 50) return 'start';
+                    return 'middle';
+                });
+                
+                node.selectAll('tspan').attr('x', d => {
+                    if (d.x > width - 50) return -d.radius + 5;
+                    if (d.x < 50) return d.radius - 5;
+                    return 0;
+                });
+            });
+
+            // Legend
+            const legend = svg.append('g').attr('transform', `translate(8, ${height - 50})`);
+            [['core', '#3b82f6', '● Core'], ['supporting', '#eab308', '● Support'], ['minor', '#6b7280', '● Minor']].forEach(([, color, label], i) => {
+                legend.append('text')
+                    .attr('x', i * 70)
+                    .attr('y', 0)
+                    .style('fill', color)
+                    .style('font-size', '9px')
+                    .text(label);
+            });
+        }
+
+        // ===========================
+        // === D3 Bar Chart
+        // ===========================
+        function renderTopicChart(topics) {
+            const container = document.getElementById('topicChart');
+            container.innerHTML = '';
+
+            const top15 = topics.slice(0, 15);
+            const margin = { top: 4, right: 40, bottom: 4, left: 90 };
+            const fullWidth = container.clientWidth || 380;
+            const width = fullWidth - margin.left - margin.right;
+            const barHeight = 20;
+            const gap = 3;
+            const height = top15.length * (barHeight + gap);
+
+            const svg = d3.select('#topicChart')
+                .append('svg')
+                .attr('width', fullWidth)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+
+            const x = d3.scaleLinear().domain([0, 1]).range([0, width]);
+
+            const y = d3.scaleBand()
+                .domain(top15.map(d => d.term))
+                .range([0, height])
+                .padding(0.15);
+
+            const colorScale = d3.scaleLinear()
+                .domain([0, 1])
+                .range(['#1e293b', '#3b82f6']);
+
+            // Bars with staggered animation
+            svg.selectAll('.bar')
+                .data(top15)
+                .enter().append('rect')
+                .attr('y', d => y(d.term))
+                .attr('height', y.bandwidth())
+                .attr('x', 0)
+                .attr('width', 0)
+                .attr('fill', d => d.is_heading ? '#3b82f6' : colorScale(d.score))
+                .attr('rx', 3)
+                .style('cursor', 'pointer')
+                .on('click', (event, d) => {
+                    messageInput.value = `Explain the concept of "${d.term}" as discussed in this document`;
+                    messageInput.focus();
+                    if (window.innerWidth <= 900) switchTab('chat');
+                })
+                .on('mouseover', function() { d3.select(this).style('filter', 'brightness(1.4)'); })
+                .on('mouseout', function() { d3.select(this).style('filter', 'none'); })
+                .transition()
+                .duration(600)
+                .delay((d, i) => i * 35)
+                .attr('width', d => x(d.score));
+
+            // Score labels
+            svg.selectAll('.score-label')
+                .data(top15)
+                .enter().append('text')
+                .attr('x', d => x(d.score) + 4)
+                .attr('y', d => y(d.term) + y.bandwidth() / 2)
+                .attr('dy', '0.35em')
+                .style('fill', '#6b6b6b')
+                .style('font-size', '8.5px')
+                .text(d => `${(d.score * 100).toFixed(0)}%`)
+                .style('opacity', 0)
+                .transition()
+                .duration(300)
+                .delay((d, i) => i * 35 + 600)
+                .style('opacity', 1);
+
+            // Topic labels
+            svg.selectAll('.topic-label')
+                .data(top15)
+                .enter().append('text')
+                .attr('x', -5)
+                .attr('y', d => y(d.term) + y.bandwidth() / 2)
+                .attr('dy', '0.35em')
+                .attr('text-anchor', 'end')
+                .style('fill', d => d.is_heading ? '#60a5fa' : '#a1a1a1')
+                .style('font-size', '10.5px')
+                .style('font-weight', d => d.is_heading ? '600' : '400')
+                .text(d => d.term.length > 13 ? d.term.substring(0, 11) + '…' : d.term)
+                .style('cursor', 'pointer')
+                .on('click', (event, d) => {
+                    messageInput.value = `Explain "${d.term}" in the context of this document`;
+                    messageInput.focus();
+                    if (window.innerWidth <= 900) switchTab('chat');
+                })
+                .append('title')
+                .text(d => d.term);
+        }
+
+        // ===========================
+        // === AI Summary
+        // ===========================
+        document.getElementById('summarizeBtn').addEventListener('click', generateSummary);
+
+        async function generateSummary() {
+            const btn = document.getElementById('summarizeBtn');
+            const content = document.getElementById('summaryContent');
+
+            btn.disabled = true;
+            btn.textContent = '⏳ Lexo is summarizing...';
+            content.innerHTML = '<div style="text-align: center; padding: 0.5rem;"><div class="loading"></div></div>';
+
+            const prompt = `Summarize the following document in 5-7 concise bullet points. Focus on the main themes, key arguments, and important takeaways:\n---\n${documentContext.substring(0, 6000)}\n---\n\nProvide a clear, well-structured summary.`;
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question: prompt,
+                        session_id: sessionId,
+                        doc_id: docId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    content.innerHTML = `<div class="summary-text">${escapeHtml(data.answer)}</div>`;
+                    btn.style.display = 'none';
+                } else {
+                    content.innerHTML = '<div class="summary-text" style="color: var(--error);">Failed to generate summary.</div>';
+                    btn.disabled = false;
+                    btn.textContent = '✨ Retry Summary';
+                }
+            } catch (error) {
+                content.innerHTML = '<div class="summary-text" style="color: var(--error);">Connection error. Is Ollama running?</div>';
+                btn.disabled = false;
+                btn.textContent = '✨ Retry Summary';
+            }
         }
     </script>
 </body>

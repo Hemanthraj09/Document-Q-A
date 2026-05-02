@@ -1,6 +1,10 @@
 fastapi
 uvicorn[standard]
 python-dotenv
-requests
+httpx
 pymupdf
 python-multipart
+scikit-learn
+sentence-transformers
+chromadb
+networkx
