@@ -11,7 +11,7 @@
 
 ## 🏗️ Architecture
 
-![Architecture Diagram](DocQA-final.png)
+![Architecture Diagram](architecture.png)
 
 The system is split into three parallel flows:
 
