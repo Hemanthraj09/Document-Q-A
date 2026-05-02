@@ -145,7 +145,7 @@ Document-Q-A/
 
 ## ⚙️ Hardware
 
-Tested on NVIDIA RTX 4050 Laptop (4GB VRAM). phi3 (2.2GB) fits entirely on GPU at ~12.4 tok/s. The embedding model runs on CPU to avoid VRAM contention.
+Tested on NVIDIA RTX 4050 Laptop (6GB VRAM). phi3 (2.2GB) fits entirely on GPU at ~12.4 tok/s. The embedding model runs on CPU to avoid VRAM contention.
 
 ---
 
