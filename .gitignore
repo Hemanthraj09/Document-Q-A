@@ -23,6 +23,8 @@ ENV/
 # Project specific
 uploads/
 chroma_db/
+data/
+.pytest_cache/
 *.pdf
 !samples/*.pdf
 
