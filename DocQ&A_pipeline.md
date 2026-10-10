@@ -1,190 +1,132 @@
-# Visual Document Q&A — End-to-End RAG Pipeline
+# Visual Document Q&A — Pipeline Design
 
-> **Last updated:** 2026-05-01  
-> **Version:** 4.1.0 — Concept Importance Engine + LLM Topic Extraction
+> **Last updated:** 2026-10-10
+> **Version:** 5.0.0 — Evidence-backed concept graph, prerequisite learning path, mastery tracking
 
 ## Architecture Overview
 
 ```
-┌──────────────┐     ┌─────────────────────────────────────────────────────┐
-│   Frontend   │     │              FastAPI Backend                        │
-│  index.html  │────▶│                                                     │
-│              │     │  ┌──────────┐  ┌───────────┐  ┌─────────────┐      │
-│  • Upload    │     │  │ PyMuPDF  │  │ Sentence  │  │  ChromaDB   │      │
-│  • Chat      │     │  │ Extract  │─▶│ Transform │─▶│ Vector      │      │
-│  • D3.js     │     │  │ + Heads  │  │ Embed     │  │ Store       │      │
-│    Graphs    │     │  └──────────┘  └───────────┘  └──────┬──────┘      │
-│              │◀─SSE│                                       │             │
-│  Streaming   │     │  ┌──────────┐  ┌───────────┐  ┌──────▼──────┐      │
-│  Tokens      │     │  │ Ollama   │◀─│ Augmented │◀─│ Retriever   │      │
-│              │     │  │ phi3     │  │ Prompt    │  │ Top-5       │      │
-│              │     │  │ (local)  │  │ + Lexo    │  │ + Topic     │      │
-│              │     │  └────┬─────┘  └───────────┘  │   Boost     │      │
-│              │     │       │                        └─────────────┘      │
-│              │     │  ┌────▼──────────────────────────────────────┐      │
-│              │◀─SSE│  │  Concept Importance Engine                │      │
-│  Graph       │     │  │  TF-IDF → Spread → Heading → PageRank   │      │
-│  Update      │     │  │  → Composite Score → Async LLM Refine   │      │
-│              │     │  └──────────────────────────────────────────┘      │
-└──────────────┘     └─────────────────────────────────────────────────────┘
+┌──────────────────┐     ┌──────────────────────────────────────────────────────────┐
+│   Frontend       │     │                   FastAPI Backend (main.py)              │
+│   index.html     │     │                                                          │
+│                  │────▶│  Ingestion ─ PyMuPDF ─ clean_pages ─ chunk_pages ─ MiniLM │
+│  • Chat + cites  │     │                                         │                │
+│  • Concept map   │     │                                     ChromaDB  data/docs  │
+│  • Evidence      │◀SSE─│  Chat ─ dense top-20 + BM25 top-20 ─ RRF ─ top-5 ─ phi3   │
+│    drawer        │     │                                                          │
+│  • Learning path │◀────│  analysis.py ─ sections, sentences, composite score       │
+│  • Quiz          │◀SSE─│  LLM refine ─ digest ─ phi3 JSON ─ grounding ─ re-rank    │
+│                  │◀────│  learning.py ─ evidence, prerequisite DAG                 │
+│                  │◀────│  mastery.py ─ EMA + SM-2, quiz targeting, grading         │
+└──────────────────┘     └──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 1. Document Ingestion
+## 1. Ingestion (`POST /upload-pdf`, `POST /ingest`)
 
-### PDF Upload (`POST /upload-pdf`)
-1. **Text Extraction** — PyMuPDF extracts text from each page
-2. **Tiered Heading Detection** — Font-size analysis relative to body text mode:
-   - H1: font > 1.6× body size → 3× weight
-   - H2: font > 1.3× body size → 2× weight
-   - H3: font > 1.15× body size → 1.5× weight
-3. **Chunking** — 1000-char chunks, 200-char overlap, sentence-boundary aware
-4. **Embedding** — `all-MiniLM-L6-v2` (384-dim, CPU)
-5. **Storage** — ChromaDB in-memory, cosine similarity
-6. **Returns** — `doc_id`, `chunks_count`, `headings`, `heading_levels`, full text
-
-### Text Input (`POST /ingest`)
-Same pipeline, skips PDF extraction.
+1. **Extraction** — PyMuPDF page text, plus every text line with its largest font size.
+2. **Tiered headings** — relative to the modal (body) font size: H1 ≥ 1.6×, H2 ≥ 1.3×, H3 > 1.15×. Lines must contain a letter and be 4–149 characters.
+3. **Cleaning** (`analysis.clean_pages`, one entry per page so page numbers stay valid):
+   - Layer 1: lines repeated on ≥ 30% of pages (running headers/footers)
+   - Layer 2: page numbers, dates, emails, URLs, DOIs, captions, short numeric labels, table-of-contents and index lines (dot leaders, "(page 3)", or pages where most lines end in a number)
+   - Reflow: hard-wrapped lines are rejoined into sentences; hyphenated line breaks are mended
+4. **Chunking** (`rag.chunk_pages`) — 1000 chars, 200 overlap, ends snapped to sentence/line boundaries, overlap starts on a sentence boundary when possible. Each chunk records `page_start` / `page_end`.
+5. **Embedding** — `all-MiniLM-L6-v2` (384-dim) on CPU.
+6. **Storage** — one ChromaDB collection per document (cosine); the document record (pages, headings, chunks) is saved to `data/docs/{doc_id}.json`. A SHA-256 content hash de-duplicates uploads, so re-uploading reopens the same document and its mastery. If the vector index is missing, it is rebuilt from the saved record.
+7. **Limits** — 50 MB upload cap; encrypted, corrupt and image-only PDFs get specific error messages.
 
 ---
 
 ## 2. RAG Chat (`POST /chat-stream`)
 
-### Retrieval
-1. Question embedded with same model
-2. Top-5 chunks from ChromaDB (cosine distance)
-3. **Score normalization:** `similarity = 1 - (distance / 2)` → [0, 1]
-4. **Query-aware topic boost:** +0.05–0.15 for chunks containing top TF-IDF topic terms from the user's question
-
-### Generation
-5. Prompt: Lexo system message → conversation history (last 10) → retrieved chunks + question
-6. Streamed via SSE from Ollama (`/api/chat`, `stream: true`)
-7. ~12 tok/s on RTX 4050
+1. **Small talk** — only whole-message greetings/thanks get a canned reply; "Define overfitting" is answered normally.
+2. **Hybrid retrieval** — dense top-20 (Chroma) and BM25 top-20 (plural-folded tokens) fused with reciprocal rank fusion (k = 60); the best 5 go into the prompt. Fusion changes *which* chunks are used, not just their order.
+3. **Context** — each excerpt is labelled `[p. 4]` / `[pp. 4–5]` (or `[Excerpt n]` for text); the system prompt asks Lexo to cite those labels.
+4. **Budget** — `num_ctx = 4096`, `num_predict = 768`. History (last 10 messages, question + answer only) is trimmed so system + excerpts + history fit; otherwise Ollama would silently drop the start of the prompt, i.e. the system prompt.
+5. **Streaming** — SSE events: `sources` first, then `token`s, then `done`. Ollama errors (model not pulled, server down, timeouts) are turned into user-readable messages.
+6. **Exposure** — concepts named in the question are marked "explored" for mastery tracking.
 
 ---
 
 ## 3. Concept Importance Engine (`POST /analyze`)
 
-### 4-Layer Text Cleaning (before analysis)
-| Layer | What It Removes |
+### Sections and sentences
+- Headings are located **on their own page** (a table of contents can't hijack the boundaries); tiny sections are merged; < 3 sections falls back to 1500-char windows.
+- Sentences are indexed with page and section, so every claim in the UI can cite where it came from.
+
+### Candidates
+- TF-IDF (1–2 grams, 50 features, adaptive `min_df`/`max_df`) over sections nominates candidates.
+- Stopwords: English + static academic/structural words + generic adjectives/verbs + **branding** (words on both the first and last page but nowhere in the body).
+- Fragments are dropped: a term whose occurrences are ≥ 70% inside a longer candidate ("descent" in "gradient descent").
+
+### Composite score (`analysis.measure_terms`)
+Counts come from word-boundary regex matches (plural- and hyphen-tolerant, never across line breaks), so any term — including LLM suggestions — can be measured.
+
+```
+importance = (0.30 × frequency       mean TF-IDF over sections (smoothed idf, l2-normalised rows)
+            + 0.25 × spread          sections containing term / total sections
+            + 0.20 × heading_weight  max over matching headings: H1 3.0, H2 2.0, H3 1.5, ÷ 3.0
+            + 0.25 × centrality)     PageRank on the section co-occurrence graph (edges ≥ 0.05)
+            × multipliers            defined explicitly ×1.3 · near figure/table ×1.2 · worked examples ×1.15
+                                     (each applied once) · LLM-endorsed ×2
+```
+
+Scores are normalised so the top concept is 1.0. Co-occurrence uses one matrix product (`Bᵀ·B` over a binary section×term matrix). Edges with weight ≥ 0.10 are drawn.
+
+| Tier | Score | Colour |
+|---|---|---|
+| Core | > 0.55 | Blue |
+| Supporting | 0.30 – 0.55 | Yellow |
+| Minor | ≤ 0.30 | Grey |
+
+**Study priority:** `sum(top-5 scores) / sum(all scores)`.
+
+---
+
+## 4. LLM Refinement (`POST /analyze-llm`, SSE)
+
+1. The graph is already on screen; this runs in the background.
+2. **Digest** — outline (H1/H2) plus an evenly-spaced excerpt from every section, within 8000 chars, so the model sees the whole document, not just its first pages.
+3. **phi3 in JSON mode** (`format: "json"`, temperature 0.3) returns `{"topics": [...]}`; a regex fallback handles stray prose.
+4. **Grounding** — a suggestion that never appears in the text is rejected (and shown to the user as rejected).
+5. **Merge** — exact/plural matches endorse the existing concept; a shorter piece of an existing phrase endorses that phrase; new grounded concepts are added using the document's own wording. Everything is re-measured, endorsed concepts get ×2, and the top 25 are kept.
+6. Results are cached per document; Ollama failures fall back silently to the TF-IDF graph.
+
+---
+
+## 5. Evidence and Learning Path (`learning.py`)
+
+### Evidence drawer
+- **Concept:** score breakdown (each signal × weight, multipliers), up to 2 definitional sentences, up to 4 mentions from different sections, mention/section/page counts, prerequisites and what it unlocks, each with the sentence that justifies it.
+- **Link:** number of shared sentences and sections (the edge weight), the sentences that contain both, or paired sentences from shared sections, plus the prerequisite relation if one exists.
+
+### Prerequisite DAG
+A concept's **introduction** is its first definitional sentence (else first substantive mention, ≥ 6 words) plus the next two sentences in the same section. Edge *A → B*:
+
+| Signal | Weight | Example |
+|---|---|---|
+| B's introduction uses A, and A was introduced earlier | +1 per sentence | "Gradient descent … minimizes a **loss function**" |
+| A sentence states the dependency | +2 | "B is a type of A", "B relies on A", "A is used by B" |
+| B is a more specific A (same head noun) | 1 | "neural network" → "network" |
+
+Minor-tier concepts never gate others. Cycles: repeatedly remove the weakest edge in a cycle (ties: the edge that runs against document order). `transitive_reduction` keeps only direct prerequisites. Order: `lexicographical_topological_sort` with key *(−concepts unlocked, introduction position)*.
+
+---
+
+## 6. Mastery and Quizzes (`mastery.py`)
+
+| Piece | Rule |
 |---|---|
-| **1. Repeated Line Stripping** | Lines appearing on >30% of pages (headers, footers, running titles) |
-| **2. Metadata Regex** | Page numbers, dates, emails, URLs, DOIs, figure/table labels |
-| **3. Static Stopwords** | 60+ academic/structural terms: figure, table, chapter, appendix, bibliography... |
-| **3b. Dynamic Stopwords** | Top-3 frequent words (4+ letters, 3+ occurrences) from first+last page |
-| **4. TF-IDF Frequency Bounds** | `min_df=2, max_df=0.7` for 8+ sections; looser for smaller documents |
+| Mastery | EMA: `m ← m + 0.5 × (score − m)`; mastered at ≥ 0.8 |
+| Status | unseen → explored (asked about in chat) → learning → mastered |
+| Schedule | SM-2: quality = round(score × 5); intervals 1, 6, then × ease; ease ≥ 1.3; failure resets to 1 day |
+| Target | maximise `importance × (1 − mastery) × (1 if due else 0.25) × (0.35 if a prerequisite < 0.5 mastery else 1)` |
+| Question | phi3 (JSON mode) from the concept's evidence + 3 retrieved chunks; fallback: fill-in-the-blank from a definition sentence |
+| Grading | free text: `0.6 × LLM score + 0.4 × similarity`, similarity = clamp((cos − 0.25) / 0.5); cloze: exact (plural-insensitive) match, typo = 0.75; short "I don't know" = 0 |
+| Storage | `data/mastery/{doc_id}.json`, atomic writes |
 
-### Smart Sectioning
-- **Primary:** Split by detected headings (uses heading positions from font-size analysis)
-- **Fallback:** If <3 heading-based sections, split into 1500-char fixed chunks
-- Guarantees TF-IDF always gets a multi-document corpus
-
-### Composite Importance Score
-```
-importance = 0.30 × frequency     (normalized TF-IDF)
-           + 0.25 × spread        (sections_containing / total_sections)
-           + 0.20 × heading_weight (0=body, 0.5=H3, 0.67=H2, 1.0=H1)
-           + 0.25 × centrality    (PageRank on co-occurrence graph)
-```
-
-### Topic Tiers
-| Tier | Score Range | Node Color | Meaning |
-|---|---|---|---|
-| **Core** | > 0.7 | 🔵 Blue | Central concepts, must-know |
-| **Supporting** | 0.4 – 0.7 | 🟡 Yellow | Important context |
-| **Minor** | < 0.4 | ⚪ Grey | Peripheral mentions |
-
-### Study Priority
-`"Top 5 topics cover ~X% of this document"` — computed as `sum(top5_importance) / sum(all_importance) × 100`
-
----
-
-## 4. Async LLM Topic Extraction (`POST /analyze-llm`)
-
-**Runs in background after TF-IDF graph is already displayed.**
-
-### Flow
-1. Frontend renders TF-IDF graph instantly → badge shows `"20 topics ✨ refining..."`
-2. Frontend fires background POST to `/analyze-llm` with document text + existing topics
-3. Backend sends first 8K chars to Ollama with domain-adaptive prompt (temperature=0.3)
-4. Prompt instructs: "Return ONLY specific named concepts, not generic vocabulary"
-5. Response parsed with 2-layer JSON extractor (direct parse → regex fallback)
-6. LLM topics merged with existing TF-IDF topics:
-   - **Existing match (case-insensitive):** 1.5× score boost + tier upgrade
-   - **Partial match (substring):** skipped (already covered)
-   - **New topic:** added at score 0.55 (supporting tier)
-7. Merged topics (max 25) sent as SSE event → frontend re-renders graph in-place
-8. Badge updates to `"25 topics ✨"` — sparkle indicates LLM-refined
-
-### Fault Tolerance
-- Malformed JSON → silent fallback to TF-IDF
-- Ollama timeout/disconnect → silent fallback
-- Frontend badge reverts if LLM fails — user never sees an error
-
----
-
-## 5. Visual Insights (Frontend)
-
-### D3.js Force-Directed Graph
-- **Node size** → composite importance score
-- **Node color** → tier (blue/yellow/grey)
-- **Edge thickness** → co-occurrence weight
-- **Glow effect** → core concepts only
-- **Label color** → matches tier
-- **Legend** → `● Core  ● Support  ● Minor`
-- **Tooltips** → importance %, spread %, centrality %, tier
-- **Click** → fills chat input with "What does the document say about X?"
-
-### Animated Bar Chart
-- Top 15 topics, horizontal bars, ranked by importance
-
-### AI Summary
-- On-demand bullet-point summary via `/chat` endpoint
-
----
-
-## 6. Data Flow Diagram
-
-```
-User uploads PDF
-  │
-  ▼
-PyMuPDF: Extract text + detect tiered headings (H1/H2/H3)
-  │
-  ├──▶ 4-Layer Cleaning ──▶ Smart Sectioning ──▶ TF-IDF
-  │                                                 │
-  │                                    ┌────────────┤
-  │                                    ▼            ▼
-  │                              Spread Score   PageRank
-  │                                    │            │
-  │                                    ▼            ▼
-  │                            Composite Importance Score
-  │                              (freq + spread + heading + centrality)
-  │                                    │
-  │                                    ├──▶ Frontend Graph (instant)
-  │                                    │
-  │                                    ▼
-  │                            Async LLM Extraction
-  │                              (phi3, background SSE)
-  │                                    │
-  │                                    ▼
-  │                            Merge + Re-render Graph (10-15s later)
-  │
-  ▼
-Chunk (1000c/200 overlap) ──▶ Embed (MiniLM) ──▶ ChromaDB Store
-                                                        │
-User asks question ──▶ Embed ──────────────────────────▶│
-                                                        ▼
-                                                   Retrieve top-5
-                                              + topic-aware re-ranking
-                                                        │
-                                              Lexo prompt + history
-                                                        │
-                                              Ollama phi3 (stream SSE)
-                                                        │
-                                                  User sees answer
-```
+Questions are kept server-side until answered (the client never sees the reference answer early) and can be answered once.
 
 ---
 
@@ -192,51 +134,49 @@ User asks question ──▶ Embed ───────────────
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/` | GET | Serve frontend UI |
-| `/health` | GET | Health check (PDF/NLP/RAG status) |
-| `/upload-pdf` | POST | PDF extraction + heading detection + RAG ingestion |
-| `/ingest` | POST | Text ingestion into RAG pipeline |
-| `/analyze` | POST | TF-IDF + Composite Importance Engine |
-| `/analyze-llm` | POST | Async LLM topic extraction (SSE) |
-| `/chat-stream` | POST | RAG retrieval + Ollama streaming (SSE) |
-| `/chat` | POST | Non-streaming fallback (AI Summary) |
+| `/` | GET | UI |
+| `/health` | GET | Status incl. Ollama reachability |
+| `/upload-pdf` | POST | Ingest a PDF |
+| `/ingest` | POST | Ingest text / .txt |
+| `/analyze` | POST | Concepts, edges, learning path, mastery (`{doc_id}`) |
+| `/analyze-llm` | POST | LLM refinement (SSE) |
+| `/chat-stream` | POST | Hybrid RAG chat (SSE) |
+| `/documents/{id}/concept` | GET | Concept evidence |
+| `/documents/{id}/relation` | GET | Link evidence |
+| `/documents/{id}/mastery` | GET | Mastery state |
+| `/documents/{id}/quiz` | POST | Next question |
+| `/documents/{id}/quiz/{quiz_id}/answer` | POST | Grade + update mastery |
 
 ---
 
-## 8. Dependencies
+## 8. What changed in 5.0 and why
 
-| Package | Purpose |
+| Problem in 4.x | Fix |
 |---|---|
-| `fastapi` + `uvicorn` | Web server |
-| `pymupdf` (fitz) | PDF extraction + font-size analysis |
-| `sentence-transformers` | Embeddings (all-MiniLM-L6-v2) |
-| `chromadb` | Vector storage + similarity search |
-| `scikit-learn` | TF-IDF topic analysis |
-| `networkx` | PageRank centrality computation |
-| `httpx` | Async HTTP for Ollama API |
-| `python-dotenv` | Environment variables |
-| **Ollama** (external) | Local LLM — phi3:latest |
+| "Re-ranking" reordered the same 5 chunks that all went to the LLM anyway | Hybrid dense + BM25 retrieval over 20 candidates each, fused with RRF |
+| No citations; page markers were embedded as noise | Page-aware chunks, labelled excerpts, cited answers, sources list |
+| SSE parser dropped tokens split across network reads | Buffered event parsing for every stream |
+| `.txt` uploads were never indexed | `.txt` goes through `/ingest` |
+| Greeting filter swallowed short questions ("Define X") | Only whole-message greetings/thanks |
+| No `num_ctx`: overflow truncated the system prompt first | `num_ctx` / `num_predict` set; history budgeted |
+| CPU-heavy work in `async` handlers froze the server | Threadpool for extraction, embedding, analysis |
+| O(terms² × sections) co-occurrence with sparse element access | One matrix product |
+| Exam boost compounded per section, then capped → ties at 1.0 | Each multiplier once; normalise instead of capping |
+| Headings matched in the table of contents | Headings searched on their own page; TOC/index lines stripped |
+| Branding stopwords deleted real topics on the first/last page | Branding must be absent from the body |
+| TF-IDF fragments ("descent", "neural") ranked as concepts | Fragment filter |
+| LLM saw only the first 8000 chars; hallucinated topics entered the graph | Whole-document digest; grounding check; LLM terms measured like any other |
+| Substring matching ("art" in "partial") | Word-boundary, plural-aware term regex |
+| State lost on restart; orphaned Chroma collections | Persisted document records, content-hash de-duplication, index rebuild |
+| D3 and fonts from CDNs despite "fully local" | D3 served from `static/`, system fonts |
+| Embeddings not actually pinned to CPU | `device="cpu"` (configurable) |
+| CORS `*` with credentials, `0.0.0.0` bind, raw exception text | Localhost origins, `127.0.0.1`, user-safe error messages |
+| No tests | pytest suite for analysis, learning path, mastery, retrieval |
 
 ---
 
-## 9. Key Design Decisions
+## 9. Hardware
 
-| Decision | Rationale |
-|---|---|
-| **Composite score over pure TF-IDF** | 4-signal blend prevents generic words from dominating |
-| **Heading-based sectioning** | Semantically meaningful sections > arbitrary page splits |
-| **1500-char fallback chunks** | Guarantees multi-doc corpus for TF-IDF when headings are absent |
-| **Async LLM as enhancement** | TF-IDF graph appears in <1s; LLM refinement is optional upgrade |
-| **1.5× boost for LLM matches** | LLM validates domain relevance; existing TF-IDF terms deserve promotion |
-| **25 topic cap after merge** | Prevents graph overcrowding while allowing LLM additions |
-| **temperature=0.3** | Lower creativity = more consistent JSON output from phi3 |
-| **2-layer JSON parser** | phi3 sometimes wraps JSON in markdown; regex fallback catches it |
-
----
-
-## 10. Hardware Constraints
-
-- **GPU:** NVIDIA RTX 4050 Laptop — 4GB VRAM
-- **phi3:** 2.2GB, fits 100% on GPU, ~12.4 tok/s
-- **Embedding model:** runs on CPU (no GPU contention)
-- **llama3.1 (8B):** does NOT fit — crashes with OOM
+- **GPU:** NVIDIA RTX 4050 Laptop — 6 GB VRAM
+- **phi3:** 2.2 GB, fits entirely on GPU, ~12 tok/s
+- **Embedding model:** CPU (`EMBED_DEVICE=cpu`) to avoid VRAM contention
