@@ -4,11 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Visual Document Q&A</title>
-    <meta name="description" content="Upload documents and explore topics visually with AI-powered Q&A">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <meta name="description" content="Ask questions about a document, see the evidence behind every concept, and track what you've learned">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+    <script src="/static/d3.v7.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -16,8 +14,7 @@
             --primary: #3b82f6;
             --primary-hover: #2563eb;
             --primary-light: rgba(59, 130, 246, 0.1);
-            --accent: #8b5cf6;
-            --accent-light: rgba(139, 92, 246, 0.15);
+            --primary-text: #93c5fd;
             --bg-main: #0a0a0a;
             --bg-card: #141414;
             --bg-elevated: #1a1a1a;
@@ -28,44 +25,23 @@
             --border: #262626;
             --border-hover: #404040;
             --success: #22c55e;
+            --warning: #f59e0b;
             --error: #ef4444;
             --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
             --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
             --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
         }
 
-        .graph-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100vw; height: 100vh;
-            background: var(--bg-main);
-            z-index: 9999;
-            flex-direction: column;
-        }
-        .graph-overlay.active { display: flex; }
-    .graph-overlay-header {
-        padding: 0.75rem 1rem;
-        border-bottom: 1px solid var(--border);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background: var(--bg-card);
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-    }
-
-        .graph-overlay-body {
-            flex: 1;
-            overflow: hidden;
-        }
-
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
             background: var(--bg-main);
             color: var(--text-primary);
             min-height: 100vh;
+        }
+
+        button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
         }
 
         /* ===== Landing Page ===== */
@@ -126,10 +102,7 @@
             transition: all 0.2s ease;
             box-shadow: var(--shadow-sm);
         }
-        .input-card:hover {
-            border-color: var(--border-hover);
-            box-shadow: var(--shadow-md);
-        }
+        .input-card:hover { border-color: var(--border-hover); box-shadow: var(--shadow-md); }
 
         .input-card h3 {
             font-size: 0.875rem;
@@ -158,11 +131,7 @@
             margin-bottom: 1rem;
             transition: border-color 0.2s ease;
         }
-        #textInput:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px var(--primary-light);
-        }
+        #textInput:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
         #textInput::placeholder { color: var(--text-muted); }
 
         .upload-zone {
@@ -177,22 +146,12 @@
             align-items: center;
             justify-content: center;
             background: var(--bg-input);
+            color: var(--text-secondary);
+            font-size: 0.85rem;
         }
-        .upload-zone:hover {
-            border-color: var(--primary);
-            background: var(--primary-light);
-        }
-        .upload-zone.dragover {
-            border-color: var(--primary);
-            background: var(--primary-light);
-            border-style: solid;
-        }
-
-        .upload-icon {
-            font-size: 1.75rem;
-            margin-bottom: 0.5rem;
-            opacity: 0.7;
-        }
+        .upload-zone:hover, .upload-zone.dragover { border-color: var(--primary); background: var(--primary-light); }
+        .upload-zone.dragover { border-style: solid; }
+        .upload-icon { font-size: 1.75rem; margin-bottom: 0.5rem; opacity: 0.7; }
 
         .btn {
             padding: 0.75rem 1.5rem;
@@ -207,17 +166,31 @@
             transition: all 0.2s ease;
             width: 100%;
         }
-        .btn:hover:not(:disabled) {
-            background: var(--primary-hover);
-            box-shadow: var(--shadow-md);
-        }
+        .btn:hover:not(:disabled) { background: var(--primary-hover); box-shadow: var(--shadow-md); }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-secondary, .btn-back {
+            padding: 0.4rem 0.875rem;
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.8rem;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+        .btn-secondary:hover, .btn-back:hover {
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+            background: var(--bg-elevated);
+        }
 
         /* ===== Chat Page ===== */
         .chat-page { display: none; height: 100vh; background: var(--bg-main); }
         .chat-page.active { display: flex; flex-direction: column; }
 
-        /* Header */
         .chat-header {
             padding: 0.65rem 1.25rem;
             border-bottom: 1px solid var(--border);
@@ -228,7 +201,6 @@
             gap: 1rem;
             flex-shrink: 0;
         }
-
         .chat-title {
             font-size: 0.95rem;
             font-weight: 600;
@@ -239,13 +211,14 @@
             white-space: nowrap;
         }
 
-        .header-tabs {
-            display: none;
+        .header-tabs, .view-tabs {
             gap: 0.25rem;
             background: var(--bg-elevated);
             padding: 3px;
             border-radius: 8px;
         }
+        .header-tabs { display: none; }
+        .view-tabs { display: flex; flex-shrink: 0; }
 
         .tab-btn {
             padding: 0.35rem 0.75rem;
@@ -259,51 +232,13 @@
             font-weight: 500;
             transition: all 0.2s ease;
         }
-        .tab-btn.active {
-            background: var(--primary);
-            color: white;
-        }
+        .view-tabs .tab-btn { flex: 1; }
+        .tab-btn.active { background: var(--primary); color: white; }
 
-        .btn-back {
-            padding: 0.4rem 0.875rem;
-            background: transparent;
-            color: var(--text-secondary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            cursor: pointer;
-            font-family: inherit;
-            font-size: 0.8rem;
-            transition: all 0.2s ease;
-            white-space: nowrap;
-        }
-        .btn-back:hover {
-            border-color: var(--border-hover);
-            color: var(--text-primary);
-            background: var(--bg-elevated);
-        }
+        .workspace { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 
-        /* Workspace — split panel */
-        .workspace {
-            flex: 1;
-            display: flex;
-            overflow: hidden;
-            min-height: 0;
-        }
-
-        /* Chat panel */
-        .chat-panel {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-width: 0;
-        }
-
-        .chat-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-        }
+        .chat-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .chat-container { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
         .messages {
             flex: 1;
@@ -314,12 +249,7 @@
             gap: 0.75rem;
         }
 
-        .message {
-            display: flex;
-            gap: 0.6rem;
-            animation: fadeIn 0.3s ease;
-        }
-
+        .message { display: flex; gap: 0.6rem; animation: fadeIn 0.3s ease; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(6px); }
             to { opacity: 1; transform: translateY(0); }
@@ -337,16 +267,11 @@
             background: var(--bg-elevated);
             border: 1px solid var(--border);
         }
-        .user-avatar {
-            background: var(--primary);
-            border-color: var(--primary);
-        }
-        .ai-avatar {
-            background: var(--bg-elevated);
-        }
+        .user-avatar { background: var(--primary); border-color: var(--primary); }
+
+        .message-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
 
         .message-content {
-            flex: 1;
             background: var(--bg-card);
             padding: 0.65rem 0.875rem;
             border-radius: 8px;
@@ -355,17 +280,45 @@
             font-size: 0.85rem;
             white-space: pre-wrap;
             color: var(--text-primary);
+            overflow-wrap: anywhere;
         }
-        .message-content.error {
-            border-color: var(--error);
-            background: rgba(239, 68, 68, 0.1);
-        }
+        .message-content.md { white-space: normal; }
+        .message-content.error { border-color: var(--error); background: rgba(239, 68, 68, 0.1); }
         .message-content.context {
-            border-color: var(--border);
             background: var(--bg-elevated);
             font-size: 0.78rem;
             color: var(--text-secondary);
         }
+
+        .md p { margin: 0 0 0.55em; }
+        .md p:last-child { margin-bottom: 0; }
+        .md ul, .md ol { margin: 0.2em 0 0.6em 1.25em; }
+        .md li { margin: 0.15em 0; }
+        .md .md-h { font-weight: 600; margin: 0.4em 0 0.3em; }
+        .md code { background: var(--bg-elevated); padding: 0 0.3em; border-radius: 4px; font-size: 0.9em; }
+        .inline-error { color: var(--error); font-size: 0.8rem; margin-top: 0.5em; }
+
+        button.cite {
+            font: inherit;
+            font-size: 0.7rem;
+            padding: 0 0.35em;
+            margin: 0 0.1em;
+            border-radius: 4px;
+            border: 1px solid rgba(59, 130, 246, 0.45);
+            background: var(--primary-light);
+            color: var(--primary-text);
+            cursor: pointer;
+            vertical-align: 1px;
+        }
+
+        .sources { font-size: 0.75rem; color: var(--text-secondary); padding: 0 0.25rem; }
+        .sources summary { cursor: pointer; color: var(--text-muted); }
+        .sources summary:hover { color: var(--text-secondary); }
+        .sources ol { margin: 0.45rem 0 0 1.1rem; display: grid; gap: 0.45rem; }
+        .sources li { padding: 0.15rem 0.3rem; border-radius: 4px; line-height: 1.5; }
+        .sources li.flash { background: var(--primary-light); }
+        .src-label { font-weight: 600; color: var(--primary-text); margin-right: 0.4rem; }
+        .src-why { display: block; color: var(--text-muted); font-size: 0.68rem; }
 
         .input-area {
             padding: 0.65rem 0.875rem;
@@ -386,11 +339,7 @@
             font-size: 0.85rem;
             transition: border-color 0.2s ease;
         }
-        #messageInput:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px var(--primary-light);
-        }
+        #messageInput:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
         #messageInput::placeholder { color: var(--text-muted); }
 
         .send-btn {
@@ -421,8 +370,7 @@
 
         /* ===== Insights Panel ===== */
         .insights-panel {
-            width: 420px;
-            max-width: 420px;
+            width: 440px;
             border-left: 1px solid var(--border);
             overflow-y: auto;
             overflow-x: hidden;
@@ -432,8 +380,9 @@
             gap: 0.75rem;
             background: var(--bg-main);
             flex-shrink: 0;
-            box-sizing: border-box;
         }
+        .insight-view { display: flex; flex-direction: column; gap: 0.75rem; }
+        .insight-view[hidden] { display: none; }
 
         .insight-card {
             background: var(--bg-card);
@@ -442,9 +391,7 @@
             overflow: hidden;
             transition: border-color 0.2s ease;
         }
-        .insight-card:hover {
-            border-color: var(--border-hover);
-        }
+        .insight-card:hover { border-color: var(--border-hover); }
 
         .insight-header {
             padding: 0.55rem 0.875rem;
@@ -455,9 +402,11 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 0.5rem;
             text-transform: uppercase;
             letter-spacing: 0.04em;
         }
+        .header-controls { display: flex; gap: 0.4rem; align-items: center; }
 
         .insight-badge {
             font-size: 0.68rem;
@@ -468,12 +417,40 @@
             font-weight: 600;
             text-transform: none;
             letter-spacing: 0;
+            white-space: nowrap;
         }
 
-        .insight-body {
-            padding: 0.625rem;
-            min-height: 50px;
+        .icon-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+            font-size: 11px;
         }
+        .icon-btn:hover { color: var(--text-primary); border-color: var(--border-hover); }
+
+        .seg { display: flex; background: var(--bg-elevated); border-radius: 6px; padding: 2px; }
+        .seg button {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font: inherit;
+            font-size: 0.66rem;
+            padding: 0.15rem 0.45rem;
+            border-radius: 4px;
+            cursor: pointer;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .seg button.active { background: var(--primary); color: #fff; }
+
+        .insight-body { padding: 0.625rem; min-height: 50px; }
+        .insight-note { padding: 0.3rem 0.875rem 0; font-size: 0.74rem; color: var(--primary-text); font-style: italic; }
+        .insight-note:empty { display: none; }
+        .refine-note { padding: 0 0.875rem 0.55rem; font-size: 0.7rem; color: var(--text-muted); line-height: 1.5; }
+        .refine-note:empty { display: none; }
 
         .insight-placeholder {
             display: flex;
@@ -483,52 +460,287 @@
             color: var(--text-muted);
             font-size: 0.78rem;
             min-height: 80px;
+            text-align: center;
+            padding: 0 0.5rem;
         }
 
-        /* Graph styles */
+        .graph-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem 0.8rem;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            padding: 0 0.875rem 0.3rem;
+        }
+        .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.3rem; vertical-align: 0; }
+        .graph-hint { font-size: 0.68rem; color: var(--text-muted); padding: 0 0.875rem 0.6rem; }
+
         .graph-node { cursor: pointer; }
-        .graph-node circle {
-            transition: stroke-width 0.15s ease, filter 0.15s ease;
-        }
-        .graph-node:hover circle {
-            stroke-width: 3px;
-            filter: brightness(1.4);
-        }
-        .graph-node text {
-            pointer-events: none;
-            user-select: none;
-        }
-        .graph-link {
-            stroke: rgba(255, 255, 255, 0.07);
-        }
+        .graph-node circle { transition: stroke-width 0.15s ease, filter 0.15s ease, fill 0.3s ease; }
+        .graph-node:hover circle { stroke-width: 3px; filter: brightness(1.4); }
+        .graph-node.selected circle { stroke: #ffffff !important; stroke-width: 3px !important; }
+        .graph-node text { pointer-events: none; user-select: none; }
+        .graph-link { stroke: rgba(255, 255, 255, 0.07); }
+        .graph-link.hover { stroke: rgba(147, 197, 253, 0.85) !important; stroke-opacity: 1 !important; }
+        .graph-link-hit { stroke: transparent; stroke-width: 12px; cursor: pointer; }
 
-        /* Summary */
-        .summarize-btn {
-            width: 100%;
-            padding: 0.55rem;
-            font-size: 0.8rem;
-            background: var(--bg-elevated);
+        /* Mastery strip */
+        .mastery-strip {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.55rem 0.75rem;
+        }
+        .mastery-strip[hidden] { display: none; }
+        .mastery-text { font-size: 0.74rem; color: var(--text-secondary); display: flex; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
+        .mastery-text strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+        .mastery-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg-elevated); margin-top: 0.45rem; }
+        .mastery-bar span { height: 100%; transition: width 0.4s ease; }
+
+        /* Pills and chips */
+        .pill {
+            font-size: 0.66rem;
+            padding: 0.08rem 0.45rem;
+            border-radius: 10px;
             border: 1px solid var(--border);
             color: var(--text-secondary);
-            border-radius: 6px;
-            cursor: pointer;
-            font-family: inherit;
+            white-space: nowrap;
+            text-transform: none;
+            letter-spacing: 0;
             font-weight: 500;
-            transition: all 0.2s ease;
         }
-        .summarize-btn:hover:not(:disabled) {
-            background: var(--primary-light);
-            border-color: var(--primary);
-            color: var(--primary);
-        }
-        .summarize-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .tier-core { color: #93c5fd; border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.12); }
+        .tier-supporting { color: #fde68a; border-color: rgba(234, 179, 8, 0.45); background: rgba(234, 179, 8, 0.1); }
+        .tier-minor { color: #9ca3af; }
+        .m-unseen { color: #9ca3af; }
+        .m-explored { color: #7dd3fc; border-color: rgba(14, 165, 233, 0.45); background: rgba(14, 165, 233, 0.1); }
+        .m-learning { color: #fcd34d; border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.1); }
+        .m-mastered { color: #86efac; border-color: rgba(34, 197, 94, 0.45); background: rgba(34, 197, 94, 0.12); }
+        .next-pill { color: #fff; background: var(--primary); border-color: var(--primary); }
 
-        .summary-text {
-            font-size: 0.8rem;
-            line-height: 1.6;
-            color: var(--text-secondary);
-            white-space: pre-wrap;
+        .chip {
+            font: inherit;
+            font-size: 0.74rem;
+            padding: 0.12rem 0.5rem;
+            border-radius: 6px;
+            border: 1px solid var(--border-hover);
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            cursor: pointer;
         }
+        .chip:hover { border-color: var(--primary); color: var(--primary-text); }
+        .chip.static { cursor: default; color: var(--text-secondary); }
+        .chip.static:hover { border-color: var(--border-hover); color: var(--text-secondary); }
+
+        .link-btn {
+            background: none;
+            border: none;
+            padding: 0;
+            color: var(--text-primary);
+            cursor: pointer;
+            font: inherit;
+            text-align: left;
+        }
+        .link-btn:hover { color: var(--primary-text); text-decoration: underline; }
+
+        .small-btn {
+            margin-top: 0.45rem;
+            font: inherit;
+            font-size: 0.72rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            border: 1px solid var(--primary);
+            background: var(--primary-light);
+            color: var(--primary-text);
+            cursor: pointer;
+        }
+        .small-btn:hover { background: var(--primary); color: #fff; }
+
+        .muted { color: var(--text-muted); font-size: 0.78rem; }
+
+        /* Learning path */
+        .path-intro { font-size: 0.74rem; color: var(--text-muted); line-height: 1.5; padding: 0 0.2rem 0.5rem; }
+        .path-list { list-style: none; display: flex; flex-direction: column; gap: 0.4rem; }
+        .path-step {
+            display: flex;
+            gap: 0.6rem;
+            padding: 0.55rem 0.6rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-elevated);
+            margin-left: min(calc(var(--level, 0) * 12px), 48px);
+        }
+        .path-step.next { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+        .path-step.done { opacity: 0.65; }
+        .path-step.blocked .step-term { color: var(--text-secondary); }
+        .step-num {
+            font-variant-numeric: tabular-nums;
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            width: 1.4rem;
+            text-align: right;
+            padding-top: 0.12rem;
+            flex-shrink: 0;
+        }
+        .step-main { min-width: 0; flex: 1; }
+        .step-head { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+        .step-term { font-weight: 600; font-size: 0.84rem; }
+        .step-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.3rem; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+
+        /* Quiz */
+        .quiz-body { padding: 0.875rem; display: flex; flex-direction: column; gap: 0.75rem; }
+        .quiz-intro { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.6; }
+        .quiz-note { font-size: 0.74rem; color: var(--warning); line-height: 1.5; }
+        .quiz-concept { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+        .quiz-reason { font-size: 0.72rem; color: var(--text-muted); line-height: 1.5; }
+        .quiz-question { font-size: 0.92rem; line-height: 1.6; color: var(--text-primary); }
+        .quiz-kind {
+            display: block;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+        .quiz-input {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.85rem;
+            resize: vertical;
+        }
+        .quiz-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+        .quiz-actions { display: flex; gap: 0.5rem; }
+        .quiz-actions .btn { width: auto; flex: 1; padding: 0.6rem 1rem; font-size: 0.85rem; }
+        .quiz-actions .btn-secondary { font-size: 0.85rem; }
+        .quiz-error { font-size: 0.76rem; color: var(--error); }
+        .quiz-verdict {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            border: 1px solid;
+        }
+        .quiz-verdict span { font-variant-numeric: tabular-nums; font-weight: 600; }
+        .v-correct { color: #86efac; border-color: rgba(34, 197, 94, 0.5); background: rgba(34, 197, 94, 0.1); }
+        .v-partial { color: #fcd34d; border-color: rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.1); }
+        .v-incorrect { color: #fca5a5; border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.1); }
+        .quiz-feedback { font-size: 0.82rem; line-height: 1.6; color: var(--text-primary); }
+        .block-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.3rem;
+        }
+        .quiz-block p { font-size: 0.82rem; line-height: 1.6; color: var(--text-secondary); }
+        .meter { position: relative; height: 8px; background: var(--bg-elevated); border-radius: 4px; overflow: hidden; margin: 0.35rem 0; }
+        .meter div { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+        .meter-before { background: var(--border-hover); }
+        .meter-after { transition: width 0.6s ease; }
+        .mastery-numbers { font-size: 0.74rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+        .graded-by { font-size: 0.68rem; color: var(--text-muted); }
+
+        /* Evidence drawer */
+        .drawer {
+            position: fixed;
+            top: 0;
+            right: 0;
+            height: 100vh;
+            width: min(440px, 100vw);
+            background: var(--bg-card);
+            border-left: 1px solid var(--border);
+            box-shadow: var(--shadow-lg);
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            animation: slideIn 0.2s ease;
+        }
+        .drawer[hidden] { display: none; }
+        @keyframes slideIn { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+        .drawer-header {
+            padding: 0.8rem 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 0.75rem;
+        }
+        .drawer-kicker { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+        .drawer-title { font-size: 1.05rem; font-weight: 600; overflow-wrap: anywhere; margin-top: 0.15rem; }
+        .drawer-body { flex: 1; overflow-y: auto; padding: 0.85rem 1rem 1.5rem; display: flex; flex-direction: column; gap: 1.1rem; }
+        .drawer-section h4 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            margin-bottom: 0.45rem;
+            font-weight: 600;
+        }
+        .drawer-pills { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+        .drawer-note { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.45rem; line-height: 1.5; }
+        .drawer-actions { display: flex; gap: 0.5rem; }
+        .drawer-actions .btn { width: auto; flex: 1; padding: 0.55rem 0.9rem; font-size: 0.82rem; }
+        .stats-line { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.55; margin-bottom: 0.35rem; }
+        .stats-line strong { color: var(--text-primary); }
+
+        .signal { display: grid; grid-template-columns: 6.8rem 1fr 4.6rem; align-items: center; gap: 0.5rem; font-size: 0.76rem; margin: 0.3rem 0; }
+        .signal-name { color: var(--text-secondary); }
+        .signal-bar { height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
+        .signal-bar div { height: 100%; background: var(--primary); border-radius: 3px; }
+        .signal-value { font-variant-numeric: tabular-nums; color: var(--text-muted); text-align: right; font-size: 0.7rem; }
+        .multipliers { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.5rem; }
+
+        .quote {
+            border-left: 2px solid var(--border-hover);
+            padding: 0.4rem 0.65rem;
+            margin: 0.35rem 0;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            background: var(--bg-elevated);
+            border-radius: 0 6px 6px 0;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+        }
+        .cite-static { font-size: 0.7rem; color: var(--primary-text); white-space: nowrap; margin-left: 0.25rem; }
+        .edge-item { margin-bottom: 0.6rem; }
+        .edge-reason { display: block; font-size: 0.74rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .pair-section { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.5rem; }
+
+        /* Bar chart */
+        .bar-label { cursor: pointer; }
+
+        /* Fullscreen graph */
+        .graph-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: var(--bg-main);
+            z-index: 9999;
+            flex-direction: column;
+        }
+        .graph-overlay.active { display: flex; }
+        .graph-overlay-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            background: var(--bg-card);
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        .graph-overlay-header .graph-legend { padding: 0; flex: 1; justify-content: center; font-weight: 400; }
+        .graph-overlay-body { flex: 1; overflow: hidden; }
 
         /* Loading */
         .loading {
@@ -540,21 +752,23 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
             margin-right: 0.4rem;
+            flex-shrink: 0;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* Scrollbar */
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
 
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+
         /* ===== Responsive ===== */
         @media (max-width: 900px) {
             .header-tabs { display: flex; }
-
             .workspace { flex-direction: column; }
-
             .insights-panel {
                 display: none;
                 width: 100%;
@@ -562,18 +776,16 @@
                 border-top: 1px solid var(--border);
                 flex: 1;
             }
-            .insights-panel.mobile-active {
-                display: flex;
-            }
-            .chat-panel.mobile-hidden {
-                display: none;
-            }
+            .insights-panel.mobile-active { display: flex; }
+            .chat-panel.mobile-hidden { display: none; }
         }
 
         @media (max-width: 700px) {
             .input-options { grid-template-columns: 1fr; }
             h1 { font-size: 1.75rem; }
             .logo { width: 56px; height: 56px; font-size: 2rem; }
+            .chat-header { padding: 0.6rem 0.75rem; gap: 0.5rem; }
+            .wide-only { display: none; }
         }
     </style>
 </head>
@@ -582,7 +794,7 @@
     <div class="container landing" id="landing">
         <div class="logo">📄</div>
         <h1>Visual Document Q&A</h1>
-        <p class="subtitle">Intelligent document analysis with visual insights</p>
+        <p class="subtitle">Ask questions, see the evidence behind every concept, and track what you've learned</p>
 
         <div class="input-options">
             <div class="input-card">
@@ -592,14 +804,9 @@
             </div>
 
             <div class="input-card">
-                <h3>📄 Upload PDF</h3>
-                <div class="upload-zone" id="uploadZone">
-                    <div class="upload-icon">📁</div>
-                    <div style="color: var(--text-secondary); font-size: 0.85rem;">
-                        Drag & drop PDF here<br>or click to browse
-                    </div>
-                    <input type="file" id="fileInput" accept=".pdf,.txt" style="display: none;">
-                </div>
+                <h3>📄 Upload PDF or TXT</h3>
+                <div class="upload-zone" id="uploadZone" role="button" tabindex="0"></div>
+                <input type="file" id="fileInput" accept=".pdf,.txt" hidden>
             </div>
         </div>
     </div>
@@ -607,22 +814,21 @@
     <!-- Chat Page -->
     <div class="chat-page" id="chatPage">
         <div class="chat-header">
-            <div class="chat-title">✨ Lexo — Document Analyst</div>
+            <div class="chat-title">⌬ Lexo<span class="wide-only"> — Document Analyst</span></div>
             <div class="header-tabs" id="headerTabs">
                 <button class="tab-btn active" id="chatTabBtn">💬 Chat</button>
                 <button class="tab-btn" id="insightsTabBtn">🔍 Insights</button>
             </div>
-            <button class="btn-back" id="backBtn">← New Document</button>
+            <button class="btn-back" id="backBtn" aria-label="New document">← New<span class="wide-only"> Document</span></button>
         </div>
 
         <div class="workspace">
-            <!-- Left: Chat -->
             <div class="chat-panel" id="chatPanel">
                 <div class="chat-container">
                     <div class="messages" id="messages"></div>
                     <div class="input-area">
                         <div class="input-wrapper">
-                            <input type="text" id="messageInput" placeholder="Ask a question about the document..." autofocus>
+                            <input type="text" id="messageInput" placeholder="Ask a question about the document..." autocomplete="off">
                             <button class="send-btn" id="sendBtn">Send</button>
                         </div>
                     </div>
@@ -630,119 +836,294 @@
                 </div>
             </div>
 
-            <!-- Right: Insights -->
             <div class="insights-panel" id="insightsPanel">
-                <div class="insight-card">
-                    <div class="insight-header">
-                        <span>🕸️ Topic Graph</span>
-                        <div style="display:flex; gap:0.5rem; align-items:center;">
-                            <span class="insight-badge" id="topicCount">waiting...</span>
-                            <button id="fullscreenGraphBtn" title="Fullscreen" style="background:transparent; border:1px solid var(--border); color:var(--text-secondary); border-radius:4px; padding:2px 6px; cursor:pointer; font-size:11px;">⛶</button>
+                <div class="view-tabs" role="tablist">
+                    <button class="tab-btn view-tab active" data-view="map" role="tab" aria-selected="true">Concept map</button>
+                    <button class="tab-btn view-tab" data-view="path" role="tab" aria-selected="false">Learning path</button>
+                    <button class="tab-btn view-tab" data-view="quiz" role="tab" aria-selected="false">Quiz</button>
+                </div>
+
+                <div class="mastery-strip" id="masteryStrip" hidden>
+                    <div class="mastery-text" id="masteryText"></div>
+                    <div class="mastery-bar" id="masteryBar"></div>
+                </div>
+
+                <div class="insight-view" id="view-map">
+                    <div class="insight-card">
+                        <div class="insight-header">
+                            <span>🕸️ Concepts</span>
+                            <div class="header-controls">
+                                <div class="seg" role="group" aria-label="Color nodes by">
+                                    <button class="active" data-color="importance">Importance</button>
+                                    <button data-color="mastery">Mastery</button>
+                                </div>
+                                <span class="insight-badge" id="topicCount">waiting…</span>
+                                <button class="icon-btn" id="fullscreenGraphBtn" title="Fullscreen" aria-label="Show graph fullscreen">⛶</button>
+                            </div>
                         </div>
+                        <div class="insight-note" id="studyPriority"></div>
+                        <div class="insight-body" id="topicGraph"></div>
+                        <div class="graph-legend" id="graphLegend"></div>
+                        <div class="graph-hint">Click a concept to see why it ranks where it does. Click a link to see where two concepts meet in the text.</div>
+                        <div class="refine-note" id="refineNote"></div>
                     </div>
-                    <div id="studyPriority" style="padding: 4px 14px; font-size: 0.75rem; color: #93c5fd; font-style: italic;"></div>
-                    <div class="insight-body" id="topicGraph">
-                        <div class="insight-placeholder">Upload a document to see topic analysis</div>
+
+                    <div class="insight-card">
+                        <div class="insight-header"><span>📊 Concept Importance</span></div>
+                        <div class="insight-body" id="topicChart"></div>
                     </div>
                 </div>
 
-                <div class="insight-card">
-                    <div class="insight-header">
-                        <span>📊Important Keywords Across Document</span>
+                <div class="insight-view" id="view-path" hidden>
+                    <div class="insight-card">
+                        <div class="insight-header">
+                            <span>🧭 Study Order</span>
+                            <span class="insight-badge" id="pathMeta"></span>
+                        </div>
+                        <div class="insight-body">
+                            <p class="path-intro">Built from the text: a concept comes after the ones its definition relies on. Concepts that unlock the most others come first; ties follow the document's own order.</p>
+                            <ol class="path-list" id="pathList"></ol>
+                        </div>
                     </div>
-                    <div class="insight-body" id="topicChart">
-                        <div class="insight-placeholder">Topic rankings will appear here</div>
+                </div>
+
+                <div class="insight-view" id="view-quiz" hidden>
+                    <div class="insight-card">
+                        <div class="insight-header"><span>🎯 Practice</span></div>
+                        <div class="quiz-body" id="quizBody"></div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
     <div class="graph-overlay" id="graphOverlay">
         <div class="graph-overlay-header">
-            <span>🕸️ Topic Graph — Fullscreen</span>
-            <button id="closeGraphOverlay" style="background:transparent; border:1px solid var(--border); color:var(--text-secondary); border-radius:4px; padding:4px 10px; cursor:pointer; font-size:12px;">✕ Close</button>
+            <span>🕸️ Concept Graph</span>
+            <div class="graph-legend" id="overlayLegend"></div>
+            <button class="btn-secondary" id="closeGraphOverlay">✕ Close</button>
         </div>
         <div class="graph-overlay-body" id="graphOverlayBody"></div>
     </div>
+
+    <aside class="drawer" id="drawer" hidden aria-live="polite">
+        <div class="drawer-header">
+            <div>
+                <div class="drawer-kicker" id="drawerKicker"></div>
+                <div class="drawer-title" id="drawerTitle"></div>
+            </div>
+            <button class="btn-secondary" id="drawerClose" aria-label="Close">✕</button>
+        </div>
+        <div class="drawer-body" id="drawerBody"></div>
+    </aside>
+
     <script>
         // ===========================
         // === State
         // ===========================
-        let sessionId = null;
-        let documentContext = '';
-        let documentHeadings = [];
-        let documentHeadingLevels = [];
-        let docId = null;
+        const state = {
+            docId: null,
+            docKind: null,
+            sessionId: null,
+            topics: [],
+            edges: [],
+            path: { steps: [], edges: [], levels: 0 },
+            mastery: { concepts: {}, summary: null },
+            colorMode: 'importance',
+            view: 'map',
+            quiz: null,
+            drawerKey: null,
+        };
+        let chatBusy = false;
+        let chatAbort = null;
+
+        const $ = (id) => document.getElementById(id);
+        const landing = $('landing');
+        const chatPage = $('chatPage');
+        const messages = $('messages');
+        const messageInput = $('messageInput');
+        const sendBtn = $('sendBtn');
+        const statusEl = $('status');
+        const uploadZone = $('uploadZone');
+        const fileInput = $('fileInput');
+
+        const TIER_COLORS = {
+            core: { fill: '#3b82f6', stroke: '#60a5fa', label: '#93c5fd' },
+            supporting: { fill: '#eab308', stroke: '#fbbf24', label: '#fde68a' },
+            minor: { fill: '#6b7280', stroke: '#9ca3af', label: '#9ca3af' },
+        };
+        const MASTERY_COLORS = {
+            unseen: { fill: '#374151', stroke: '#6b7280', label: '#9ca3af' },
+            explored: { fill: '#0ea5e9', stroke: '#38bdf8', label: '#7dd3fc' },
+            learning: { fill: '#f59e0b', stroke: '#fbbf24', label: '#fcd34d' },
+            mastered: { fill: '#22c55e', stroke: '#4ade80', label: '#86efac' },
+        };
+        const LEGENDS = {
+            importance: [['core', 'Core'], ['supporting', 'Supporting'], ['minor', 'Minor']],
+            mastery: [['unseen', 'Not started'], ['explored', 'Asked about'], ['learning', 'Learning'], ['mastered', 'Mastered']],
+        };
+        const REASONS = {
+            introduced_using: (e) => `“${e.target}” is introduced in terms of “${e.source}”.`,
+            stated_dependency: (e) => `The text says “${e.target}” builds on “${e.source}”.`,
+            specialization: (e) => `“${e.target}” is a more specific kind of “${e.source}”.`,
+        };
 
         // ===========================
-        // === DOM References
+        // === Helpers
         // ===========================
-        const landing = document.getElementById('landing');
-        const chatPage = document.getElementById('chatPage');
-        const messages = document.getElementById('messages');
-        const messageInput = document.getElementById('messageInput');
-        const sendBtn = document.getElementById('sendBtn');
-        const status = document.getElementById('status');
-        const chatPanel = document.getElementById('chatPanel');
-        const insightsPanel = document.getElementById('insightsPanel');
+        function esc(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+        const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+        const truncate = (text, n) => (text.length > n ? text.slice(0, n).replace(/\s+\S*$/, '') + '…' : text);
+        const isMobile = () => window.innerWidth <= 900;
+        const docUrl = (suffix) => `/documents/${encodeURIComponent(state.docId)}${suffix}`;
 
-        // ===========================
-        // === Tab Switching (mobile)
-        // ===========================
-        document.getElementById('chatTabBtn').addEventListener('click', () => switchTab('chat'));
-        document.getElementById('insightsTabBtn').addEventListener('click', () => switchTab('insights'));
-
-        function switchTab(tab) {
-            document.getElementById('chatTabBtn').classList.toggle('active', tab === 'chat');
-            document.getElementById('insightsTabBtn').classList.toggle('active', tab === 'insights');
-
-            if (tab === 'chat') {
-                chatPanel.classList.remove('mobile-hidden');
-                insightsPanel.classList.remove('mobile-active');
-            } else {
-                chatPanel.classList.add('mobile-hidden');
-                insightsPanel.classList.add('mobile-active');
+        async function api(path, { method = 'GET', body, signal } = {}) {
+            const options = { method, signal };
+            if (body instanceof FormData) {
+                options.body = body;
+            } else if (body !== undefined) {
+                options.body = JSON.stringify(body);
+                options.headers = { 'Content-Type': 'application/json' };
             }
+            const res = await fetch(path, options);
+            if (!res.ok) {
+                let detail = `Request failed (${res.status})`;
+                try {
+                    const data = await res.json();
+                    if (data.detail) detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+                } catch { /* non-JSON error body */ }
+                throw new Error(detail);
+            }
+            return res;
+        }
+        const apiJson = async (path, options) => (await api(path, options)).json();
+
+        // Server-sent events arrive in arbitrary network chunks, so an event can be split
+        // across reads: buffer until the blank line that terminates each event.
+        async function readSSE(response, onEvent) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            const dispatch = (raw) => {
+                const data = raw.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+                if (!data) return;
+                try { onEvent(JSON.parse(data)); } catch (e) { console.warn('Malformed SSE event', data, e); }
+            };
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const events = buffer.split('\n\n');
+                buffer = events.pop();
+                events.forEach(dispatch);
+            }
+            buffer += decoder.decode();
+            if (buffer.trim()) dispatch(buffer);
+        }
+
+        function inlineMarkdown(text) {
+            return text
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?![*\w])/g, '$1<em>$2</em>')
+                .replace(/\[((?:pp?\.|Excerpt)\s?\d+(?:\s?[–-]\s?\d+)?)\]/g, '<button class="cite" data-label="$1">$1</button>');
+        }
+
+        // Escape first, then add a small, safe subset of markdown.
+        function renderMarkdown(src) {
+            let html = '';
+            let list = null;
+            for (const line of esc(src).split('\n')) {
+                const item = line.match(/^\s*(?:([-*•])|(\d+)[.)])\s+(.*)$/);
+                if (item) {
+                    const type = item[1] ? 'ul' : 'ol';
+                    if (list !== type) {
+                        if (list) html += `</${list}>`;
+                        html += `<${type}>`;
+                        list = type;
+                    }
+                    html += `<li>${inlineMarkdown(item[3])}</li>`;
+                    continue;
+                }
+                if (list) { html += `</${list}>`; list = null; }
+                const heading = line.match(/^\s*#{1,6}\s+(.*)$/);
+                if (heading) html += `<div class="md-h">${inlineMarkdown(heading[1])}</div>`;
+                else if (line.trim()) html += `<p>${inlineMarkdown(line)}</p>`;
+            }
+            if (list) html += `</${list}>`;
+            return html;
+        }
+
+        const quoteHtml = (q) => `<blockquote class="quote">${esc(q.text)}${q.label ? `<span class="cite-static">${esc(q.label)}</span>` : ''}</blockquote>`;
+        const chipHtml = (term) => `<button class="chip" data-term="${esc(term)}">${esc(term)}</button>`;
+        const masteryOf = (term) => state.mastery.concepts[term] || { status: 'unseen', mastery: 0, attempts: 0 };
+
+        function masteryLabel(m) {
+            return { unseen: 'Not started', explored: 'Asked about', learning: `Learning ${pct(m.mastery)}`, mastered: 'Mastered' }[m.status];
+        }
+
+        function pagesText(pages) {
+            if (!pages.length) return '';
+            const ranges = [];
+            for (const p of pages) {
+                const last = ranges[ranges.length - 1];
+                if (last && p === last[1] + 1) last[1] = p; else ranges.push([p, p]);
+            }
+            const shown = ranges.slice(0, 10).map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`));
+            return `${pages.length === 1 ? 'p.' : 'pp.'} ${shown.join(', ')}${ranges.length > 10 ? ', …' : ''}`;
+        }
+
+        function reviewText(due) {
+            if (!due) return 'not scheduled';
+            const days = Math.round((new Date(due) - Date.now()) / 86400000);
+            return days <= 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`;
+        }
+
+        function setStatus(text, cls) {
+            statusEl.textContent = text;
+            statusEl.className = `status ${cls || ''}`;
         }
 
         // ===========================
-        // === Text Analysis
+        // === Mobile tabs & insight views
         // ===========================
-        document.getElementById('analyzeTextBtn').addEventListener('click', async () => {
-            const text = document.getElementById('textInput').value.trim();
-            if (text.length < 20) {
-                alert('Please enter at least 20 characters of text.');
-                return;
-            }
-            documentContext = text;
-            documentHeadings = [];
+        $('chatTabBtn').addEventListener('click', () => switchTab('chat'));
+        $('insightsTabBtn').addEventListener('click', () => switchTab('insights'));
 
-            // Ingest into RAG pipeline
-            try {
-                const res = await fetch('/ingest', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, headings: [] })
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    docId = data.doc_id;
-                    startChat(`Text indexed: ${data.chunks_count} chunks`);
-                } else {
-                    throw new Error('Failed to index text');
-                }
-            } catch (err) {
-                alert('Error indexing text: ' + err.message);
-            }
-        });
+        function switchTab(tab) {
+            $('chatTabBtn').classList.toggle('active', tab === 'chat');
+            $('insightsTabBtn').classList.toggle('active', tab === 'insights');
+            $('chatPanel').classList.toggle('mobile-hidden', tab !== 'chat');
+            $('insightsPanel').classList.toggle('mobile-active', tab === 'insights');
+            if (tab === 'insights' && state.view === 'map' && state.topics.length) renderGraph();
+        }
+
+        document.querySelectorAll('.view-tab').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+
+        function setView(view) {
+            const wasHidden = state.view !== view;
+            state.view = view;
+            document.querySelectorAll('.view-tab').forEach((b) => {
+                b.classList.toggle('active', b.dataset.view === view);
+                b.setAttribute('aria-selected', String(b.dataset.view === view));
+            });
+            ['map', 'path', 'quiz'].forEach((v) => { $(`view-${v}`).hidden = v !== view; });
+            // The graph was laid out while hidden (zero width); redo it at the real size.
+            if (view === 'map' && wasHidden && state.topics.length) renderGraph();
+        }
 
         // ===========================
-        // === File Upload
+        // === Document input
         // ===========================
-        const uploadZone = document.getElementById('uploadZone');
-        const fileInput = document.getElementById('fileInput');
+        function resetUploadZone() {
+            uploadZone.innerHTML = '<div class="upload-icon">📁</div><div>Drag & drop a PDF or TXT here<br>or click to browse</div>';
+        }
+        resetUploadZone();
 
         uploadZone.addEventListener('click', () => fileInput.click());
+        uploadZone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
         uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
         uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
         uploadZone.addEventListener('drop', (e) => { e.preventDefault(); uploadZone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
@@ -750,660 +1131,815 @@
 
         async function handleFile(file) {
             if (!file) return;
-
-            uploadZone.innerHTML = '<div class="loading"></div> Reading file...';
-
+            const name = file.name.toLowerCase();
+            uploadZone.innerHTML = '<div class="loading"></div> Reading and indexing…';
             try {
-                if (file.name.endsWith('.txt')) {
-                    const text = await file.text();
-                    documentContext = text;
-                    documentHeadings = [];
-                    startChat(`File loaded: ${file.name}`);
-                } else if (file.name.endsWith('.pdf')) {
-                    const formData = new FormData();
-                    formData.append('file', file);
-
-                    const response = await fetch('/upload-pdf', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'PDF upload failed');
-                    }
-
-                    const data = await response.json();
-
-                    // Warn if backend detected issues with the PDF
-                    if (data.warning) {
-                        alert(`⚠️ ${data.warning}`);
-                    }
-
-                    if (!data.text || data.text.trim().length === 0) {
-                        throw new Error('No readable text found in this PDF. It may be a scanned or image-only document.');
-                    }
-
-                    documentContext = data.text;
-                    documentHeadings = data.headings || [];
-                    documentHeadingLevels = data.heading_levels || [];
-                    docId = data.doc_id || null;
-                    const chunksInfo = data.chunks_count ? ` → ${data.chunks_count} chunks indexed` : '';
-                    startChat(`PDF loaded: ${file.name} (${data.pages} pages${chunksInfo})`);
+                let doc;
+                if (name.endsWith('.pdf')) {
+                    const form = new FormData();
+                    form.append('file', file);
+                    doc = await apiJson('/upload-pdf', { method: 'POST', body: form });
+                } else if (name.endsWith('.txt')) {
+                    doc = await apiJson('/ingest', { method: 'POST', body: { text: await file.text(), filename: file.name } });
                 } else {
                     throw new Error('Please upload a PDF or TXT file.');
                 }
+                startChat(doc);
             } catch (error) {
-                uploadZone.innerHTML = '<div class="upload-icon">📁</div><div style="color: var(--text-secondary); font-size: 0.85rem;">Drag & drop PDF here<br>or click to browse</div>';
+                resetUploadZone();
                 alert(error.message);
+            } finally {
+                fileInput.value = '';
             }
         }
 
-        // ===========================
-        // === Start Chat Session
-        // ===========================
-        function startChat(contextMessage) {
+        $('analyzeTextBtn').addEventListener('click', async () => {
+            const text = $('textInput').value.trim();
+            if (text.length < 20) {
+                alert('Please enter at least 20 characters of text.');
+                return;
+            }
+            const btn = $('analyzeTextBtn');
+            btn.disabled = true;
+            btn.textContent = 'Indexing…';
+            try {
+                startChat(await apiJson('/ingest', { method: 'POST', body: { text } }));
+            } catch (error) {
+                alert(`Couldn't index the text: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Start Chat';
+            }
+        });
+
+        function startChat(doc) {
+            cancelChat();
+            state.docId = doc.doc_id;
+            state.docKind = doc.kind;
+            state.sessionId = null;
+            resetInsights();
             landing.classList.add('hidden');
             chatPage.classList.add('active');
             messages.innerHTML = '';
-            sessionId = crypto.randomUUID();
 
-            // Show context indicator
-            addMessage('system', `📎 ${contextMessage}`);
-
-            addMessage('ai', `Hey! I'm **Lexo** — your document analyst ✨\n\nI've indexed your document and I'm ready to answer any questions. I'll find the most relevant sections and give you detailed explanations.\n\nCheck the **Insights panel** on the right for a visual topic map!`);
-
-            status.textContent = '✓ Lexo ready';
-            status.className = 'status connected';
+            const name = doc.filename || 'Pasted text';
+            const detail = doc.kind === 'pdf' ? `${doc.pages} pages → ${doc.chunks_count} chunks indexed` : `${doc.chunks_count} chunks indexed`;
+            addMessage('system', `📎 Loaded ${name} (${detail})`);
+            if (doc.reused) addMessage('system', '↺ You have opened this document before, so your concept mastery has been restored.');
+            addMessage('ai', `Hey, I'm Lexo — your document analyst.\n\nI've indexed your document and I'm ready to help. Ask me anything about it — I'll pull the most relevant sections, cite the pages I used, and give you a clear, grounded answer.\n\nThe Insights panel maps the document's key concepts. Click any concept or link to see the evidence behind it, follow the learning path, or quiz yourself.`);
+            setStatus('✓ Lexo ready', 'connected');
             messageInput.focus();
-
-            // Reset insights to loading state
-            document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Analyzing topics...</div>';
-            document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Building chart...</div>';
-            // Trigger document analysis
             analyzeDocument();
         }
 
-        // ===========================
-        // === Back Button
-        // ===========================
-        document.getElementById('backBtn').addEventListener('click', () => {
+        $('backBtn').addEventListener('click', () => {
+            cancelChat();
+            closeDrawer();
+            closeOverlay();
             chatPage.classList.remove('active');
             landing.classList.remove('hidden');
-            document.getElementById('textInput').value = '';
-            document.getElementById('uploadZone').innerHTML = '<div class="upload-icon">📁</div><div style="color: var(--text-secondary); font-size: 0.85rem;">Drag & drop PDF here<br>or click to browse</div>';
-            documentContext = '';
-            documentHeadings = [];
-            sessionId = null;
-            docId = null;
+            $('textInput').value = '';
+            resetUploadZone();
+            Object.assign(state, { docId: null, docKind: null, sessionId: null });
+            resetInsights();
             switchTab('chat');
         });
 
         // ===========================
-        // === Chat Messaging
+        // === Chat
         // ===========================
-        sendBtn.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', (e) => {
+        sendBtn.addEventListener('click', () => sendMessage());
+        messageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
+        function addMessage(sender, text) {
+            const div = document.createElement('div');
+            div.className = `message ${sender}`;
+            const avatar = sender === 'system' ? '📎' : sender === 'user' ? '👤' : '⌬';
+            div.innerHTML = `
+                <div class="message-avatar ${sender === 'user' ? 'user-avatar' : ''}">${avatar}</div>
+                <div class="message-body"><div class="message-content ${sender === 'system' ? 'context' : sender === 'ai' ? 'md' : ''}"></div></div>`;
+            const content = div.querySelector('.message-content');
+            if (sender === 'ai') content.innerHTML = renderMarkdown(text);
+            else content.textContent = sender === 'system' ? text.replace(/^📎\s*/, '') : text;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+            return div;
+        }
+
+        function renderSources(sources) {
+            const details = document.createElement('details');
+            details.className = 'sources';
+            const why = (s) => [s.dense_rank && `semantic match #${s.dense_rank}`, s.keyword_rank && `keyword match #${s.keyword_rank}`].filter(Boolean).join(' · ');
+            details.innerHTML = `<summary>Sources · ${sources.map((s) => esc(s.label)).join(' · ')}</summary>
+                <ol>${sources.map((s) => `<li data-label="${esc(s.label)}"><span class="src-label">${esc(s.label)}</span>${esc(truncate(s.text, 420))}<span class="src-why">${esc(why(s))}</span></li>`).join('')}</ol>`;
+            return details;
+        }
+
+        const normLabel = (label) => label.replace(/\s+/g, '').replace('–', '-').toLowerCase();
+
+        messages.addEventListener('click', (e) => {
+            const cite = e.target.closest('.cite');
+            if (!cite) return;
+            const details = cite.closest('.message')?.querySelector('.sources');
+            if (!details) return;
+            details.open = true;
+            let match = null;
+            details.querySelectorAll('li').forEach((li) => {
+                const hit = normLabel(li.dataset.label) === normLabel(cite.dataset.label);
+                li.classList.toggle('flash', hit);
+                if (hit && !match) match = li;
+            });
+            match?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+
+        function cancelChat() {
+            chatAbort?.abort();
+            chatAbort = null;
+            chatBusy = false;
+            sendBtn.disabled = false;
+        }
+
         async function sendMessage() {
             const question = messageInput.value.trim();
-            if (!question) return;
-
+            if (!question || !state.docId || chatBusy) return;
+            const controller = new AbortController();
+            chatAbort = controller;
+            chatBusy = true;
+            sendBtn.disabled = true;
             addMessage('user', question);
             messageInput.value = '';
-            sendBtn.disabled = true;
 
-            // Create a streaming AI message
-            const aiMsgId = addMessage('ai', '', false, false, true);
-            const aiContent = document.querySelector(`#${aiMsgId} .message-content`);
-            status.textContent = '⏳ Lexo is thinking...';
-            status.className = 'status';
+            const message = addMessage('ai', '');
+            const body = message.querySelector('.message-body');
+            const content = message.querySelector('.message-content');
+            content.innerHTML = '<span class="loading"></span>';
+            setStatus('⌬ Lexo is thinking…');
 
+            let answer = '';
+            let error = null;
             try {
-                const response = await fetch('/chat-stream', {
+                const res = await api('/chat-stream', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question, session_id: sessionId, doc_id: docId })
+                    body: { question, session_id: state.sessionId, doc_id: state.docId },
+                    signal: controller.signal,
                 });
-
-                if (!response.ok) {
-                    const err = await response.json();
-                    aiContent.textContent = `Error: ${err.detail || 'Unknown error'}`;
-                    aiContent.classList.add('error');
-                    status.textContent = '✗ Error';
-                    status.className = 'status disconnected';
-                    sendBtn.disabled = false;
-                    return;
-                }
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let fullText = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    const text = decoder.decode(value, { stream: true });
-                    const lines = text.split('\n');
-
-                    for (const line of lines) {
-                        if (!line.startsWith('data: ')) continue;
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            if (data.token) {
-                                fullText += data.token;
-                                aiContent.textContent = fullText;
-                                messages.scrollTop = messages.scrollHeight;
-                            }
-                            if (data.session_id) {
-                                sessionId = data.session_id;
-                            }
-                            if (data.error) {
-                                fullText += data.error;
-                                aiContent.textContent = fullText;
-                                aiContent.classList.add('error');
-                            }
-                        } catch (e) { /* skip malformed SSE */ }
+                await readSSE(res, (data) => {
+                    if (data.sources?.length) body.appendChild(renderSources(data.sources));
+                    if (data.token) {
+                        answer += data.token;
+                        content.innerHTML = renderMarkdown(answer);
+                        messages.scrollTop = messages.scrollHeight;
                     }
+                    if (data.error) error = data.error;
+                    if (data.session_id) state.sessionId = data.session_id;
+                });
+                if (error) {
+                    content.innerHTML = renderMarkdown(answer) + `<div class="inline-error">${esc(error)}</div>`;
+                    if (!answer) content.classList.add('error');
+                    setStatus('✗ Model error', 'disconnected');
+                } else {
+                    if (!answer) content.textContent = 'The model returned an empty answer. Try rephrasing the question.';
+                    setStatus('✓ Lexo ready', 'connected');
                 }
-
-                status.textContent = '✓ Lexo ready';
-                status.className = 'status connected';
-            } catch (error) {
-                aiContent.textContent = 'Failed to connect. Is Ollama running?';
-                aiContent.classList.add('error');
-                status.textContent = '✗ Connection failed';
-                status.className = 'status disconnected';
+                refreshMastery();
+            } catch (err) {
+                if (err.name === 'AbortError') return;  // the user left this document mid-answer
+                content.textContent = err.message || 'Failed to reach the server.';
+                content.classList.add('error');
+                setStatus('✗ Connection failed', 'disconnected');
+            } finally {
+                if (chatAbort === controller) {
+                    chatAbort = null;
+                    chatBusy = false;
+                    sendBtn.disabled = false;
+                    messageInput.focus();
+                }
             }
+        }
 
-            sendBtn.disabled = false;
+        function askInChat(question) {
+            closeDrawer();
+            closeOverlay();
+            if (isMobile()) switchTab('chat');
+            messageInput.value = question;
             messageInput.focus();
         }
 
         // ===========================
-        // === Message Rendering
+        // === Analysis
         // ===========================
-        function addMessage(sender, text, isLoading = false, isError = false, isStreaming = false) {
-            const id = 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
-            const div = document.createElement('div');
-            div.className = 'message';
-            div.id = id;
-
-            let avatar, avatarClass, contentClass;
-
-            if (sender === 'system') {
-                avatar = '📎';
-                avatarClass = '';
-                contentClass = 'message-content context';
-            } else {
-                avatar = sender === 'user' ? '👤' : '✨';
-                avatarClass = sender === 'user' ? 'user-avatar' : 'ai-avatar';
-                contentClass = isError ? 'message-content error' : 'message-content';
-            }
-
-            const displayText = isStreaming ? '' : (isLoading ? text : escapeHtml(text));
-
-            div.innerHTML = `
-                <div class="message-avatar ${avatarClass}">${avatar}</div>
-                <div class="${contentClass}">${displayText}</div>
-            `;
-
-            messages.appendChild(div);
-            messages.scrollTop = messages.scrollHeight;
-            return id;
+        function setInsightPlaceholders(text, spinner = false) {
+            const html = `<div class="insight-placeholder">${spinner ? '<div class="loading"></div>' : ''}${esc(text)}</div>`;
+            $('topicGraph').innerHTML = html;
+            $('topicChart').innerHTML = html;
+            $('pathList').innerHTML = `<li>${html}</li>`;
         }
 
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        function resetInsights() {
+            Object.assign(state, {
+                topics: [], edges: [], path: { steps: [], edges: [], levels: 0 },
+                mastery: { concepts: {}, summary: null }, quiz: null,
+            });
+            setInsightPlaceholders('Analyzing concepts…', true);
+            $('topicCount').textContent = 'waiting…';
+            $('studyPriority').textContent = '';
+            $('refineNote').textContent = '';
+            $('pathMeta').textContent = '';
+            $('masteryStrip').hidden = true;
+            renderLegend();
+            renderQuizIdle();
+            setView('map');
         }
-
-        // Store current analysis data for LLM merge
-        let currentTopics = [];
-        let currentEdges = [];
 
         async function analyzeDocument() {
+            const docId = state.docId;
             try {
-                const response = await fetch('/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: documentContext,
-                        headings: documentHeadings,
-                        heading_levels: documentHeadingLevels
-                    })
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-
-                    console.log('[TOPICS] TF-IDF response:', data.topics.length, 'topics,', data.edges.length, 'edges');
-
-                    if (data.topics.length === 0) {
-                        console.log('[TOPICS] No topics returned');
-                        document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder">Not enough content to analyze</div>';
-                        document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder">Not enough content</div>';
-                        document.getElementById('topicCount').textContent = '0 topics';
-                        return;
-                    }
-                    // Store for LLM merge
-                    currentTopics = data.topics;
-                    currentEdges = data.edges;
-
-                    // Store for fullscreen
-                    window._lastTopics = data.topics;
-                    window._lastEdges = data.edges;
-
-                    // Render TF-IDF results immediately
-                    document.getElementById('topicCount').textContent = `${data.topics.length} topics`;
-                    renderTopicGraph(data.topics, data.edges);
-                    renderTopicChart(data.topics);
-
-                    if (data.study_priority) {
-                        const priorityEl = document.getElementById('studyPriority');
-                        if (priorityEl) priorityEl.textContent = data.study_priority;
-                    }
-
-                    // Fire async LLM refinement in background
-                    refineTopisWithLLM();
-
-                } else {
-                    document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder">Analysis unavailable</div>';
-                    document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder">Analysis unavailable</div>';
-                    document.getElementById('topicCount').textContent = 'error';
-                }
+                const data = await apiJson('/analyze', { method: 'POST', body: { doc_id: docId } });
+                if (docId !== state.docId) return;
+                applyAnalysis(data);
+                if (data.topics.length && !data.llm_refined) refineTopics(docId);
             } catch (error) {
-                console.error('Analysis failed:', error);
-                document.getElementById('topicGraph').innerHTML = '<div class="insight-placeholder">Analysis failed</div>';
-                document.getElementById('topicChart').innerHTML = '<div class="insight-placeholder">Analysis failed</div>';
-                document.getElementById('topicCount').textContent = 'error';
+                if (docId !== state.docId) return;
+                setInsightPlaceholders(`Analysis failed: ${error.message}`);
+                $('topicCount').textContent = 'error';
             }
         }
 
-        async function refineTopisWithLLM() {
-            const badge = document.getElementById('topicCount');
-            const origText = badge.textContent;
-            badge.textContent = `${origText} ✨ refining...`;
+        function applyAnalysis(data) {
+            Object.assign(state, { topics: data.topics, edges: data.edges, path: data.learning_path, mastery: data.mastery });
+            if (!data.topics.length) {
+                setInsightPlaceholders('Not enough content to map concepts.');
+                $('topicCount').textContent = '0 concepts';
+                return;
+            }
+            $('topicCount').textContent = `${data.topics.length} concepts${data.llm_refined ? ' · LLM-checked' : ''}`;
+            $('studyPriority').textContent = data.study_priority || '';
+            if (data.llm) {
+                const { endorsed, added, rejected } = data.llm;
+                $('refineNote').textContent = `LLM review: endorsed ${endorsed} concepts`
+                    + (added.length ? `, added ${added.join(', ')}` : '')
+                    + (rejected.length ? `. Rejected ${rejected.length} not found in the text (${rejected.join(', ')})` : '') + '.';
+            }
+            renderGraph();
+            renderTopicChart();
+            renderPath();
+            renderMasteryStrip();
+        }
 
+        async function refineTopics(docId) {
+            $('topicCount').textContent = `${state.topics.length} concepts · refining…`;
             try {
-                const response = await fetch('/analyze-llm', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: documentContext,
-                        existing_topics: currentTopics,
-                        existing_edges: currentEdges
-                    })
-                });
-
-                if (!response.ok) {
-                    console.log('[LLM] Request failed, keeping TF-IDF');
-                    badge.textContent = origText;
-                    return;
-                }
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // Keep incomplete line
-
-                    for (const line of lines) {
-                        if (!line.startsWith('data: ')) continue;
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            console.log('[LLM] Response:', data.status);
-
-                            if (data.status === 'success' && data.topics) {
-                                // Update graph with merged topics
-                                currentTopics = data.topics;
-                                document.getElementById('topicCount').textContent = `${data.topics.length} topics ✨`;
-                                window._lastTopics = data.topics;
-                                window._lastEdges = data.edges;
-                                renderTopicGraph(data.topics, data.edges);
-                                renderTopicChart(data.topics);
-
-                                if (data.study_priority) {
-                                    const priorityEl = document.getElementById('studyPriority');
-                                    if (priorityEl) priorityEl.textContent = data.study_priority;
-                                }
-                                console.log(`[LLM] Graph updated with ${data.topics.length} merged topics`);
-                            } else {
-                                // Fallback — keep TF-IDF graph as is
-                                badge.textContent = origText;
-                                console.log('[LLM] Fallback:', data.reason);
-                            }
-                        } catch (e) { /* skip malformed SSE */ }
+                const res = await api('/analyze-llm', { method: 'POST', body: { doc_id: docId } });
+                await readSSE(res, (data) => {
+                    if (docId !== state.docId) return;
+                    if (data.status === 'success') {
+                        applyAnalysis(data);
+                    } else {
+                        $('topicCount').textContent = `${state.topics.length} concepts`;
+                        $('refineNote').textContent = `LLM review skipped: ${data.reason}`;
                     }
-                }
+                });
             } catch (error) {
-                console.log('[LLM] Connection error, keeping TF-IDF:', error.message);
-                badge.textContent = origText;
+                if (docId === state.docId) $('topicCount').textContent = `${state.topics.length} concepts`;
+                console.info('[LLM refine] unavailable:', error.message);
             }
         }
 
+        async function refreshMastery() {
+            if (!state.docId || !state.topics.length) return;
+            try {
+                state.mastery = await apiJson(docUrl('/mastery'));
+                recolorGraphs();
+                renderPath();
+                renderMasteryStrip();
+            } catch (error) {
+                console.info('Could not refresh mastery:', error.message);
+            }
+        }
+
+        function renderMasteryStrip() {
+            const s = state.mastery.summary;
+            if (!s || !s.total) { $('masteryStrip').hidden = true; return; }
+            $('masteryStrip').hidden = false;
+            $('masteryText').innerHTML = `<span><strong>${s.mastered}/${s.total}</strong> concepts mastered</span>`
+                + `<span>core <strong>${s.core_mastered}/${s.core_total}</strong> · learning <strong>${s.learning}</strong> · asked about <strong>${s.explored}</strong></span>`;
+            $('masteryBar').innerHTML = ['mastered', 'learning', 'explored']
+                .map((k) => `<span style="width:${(s[k] / s.total) * 100}%;background:${MASTERY_COLORS[k].fill}" title="${k}: ${s[k]}"></span>`).join('');
+        }
+
         // ===========================
-        // === D3 Topic Graph
+        // === Concept graph
         // ===========================
-       function renderTopicGraphIn(container, topics, edges) {
+        function nodeColors(d) {
+            if (state.colorMode === 'mastery') return MASTERY_COLORS[masteryOf(d.id).status];
+            return TIER_COLORS[d.tier] || TIER_COLORS.minor;
+        }
+        function nodeOpacity(d) {
+            if (state.colorMode === 'mastery') return masteryOf(d.id).status === 'unseen' ? 0.7 : 0.9;
+            return d.tier === 'minor' ? 0.6 : 0.85;
+        }
+
+        function renderLegend() {
+            const items = LEGENDS[state.colorMode].map(([key, label]) => {
+                const color = (state.colorMode === 'mastery' ? MASTERY_COLORS : TIER_COLORS)[key].fill;
+                return `<span><span class="legend-dot" style="background:${color}"></span>${label}</span>`;
+            }).join('');
+            $('graphLegend').innerHTML = items;
+            $('overlayLegend').innerHTML = items;
+        }
+
+        document.querySelectorAll('.seg button[data-color]').forEach((b) => b.addEventListener('click', () => {
+            state.colorMode = b.dataset.color;
+            document.querySelectorAll('.seg button[data-color]').forEach((x) => x.classList.toggle('active', x === b));
+            recolorGraphs();
+            renderLegend();
+        }));
+
+        function recolorGraphs() {
+            d3.selectAll('.graph-node').each(function (d) {
+                const c = nodeColors(d);
+                const node = d3.select(this);
+                node.select('circle').style('fill', c.fill).style('stroke', c.stroke).style('opacity', nodeOpacity(d));
+                node.select('text').style('fill', c.label);
+            });
+        }
+
+        function highlightNode(term) {
+            d3.selectAll('.graph-node').classed('selected', (d) => d.id === term);
+        }
+
+        function renderGraph() {
+            renderTopicGraphIn($('topicGraph'), state.topics, state.edges);
+            if ($('graphOverlay').classList.contains('active')) renderTopicGraphIn($('graphOverlayBody'), state.topics, state.edges);
+        }
+
+        function renderTopicGraphIn(container, topics, edges) {
             container.innerHTML = '';
-
             const isFullscreen = container.id === 'graphOverlayBody';
-            const width = container.clientWidth || (isFullscreen ? window.innerWidth : 380);
+            const width = container.clientWidth || (isFullscreen ? window.innerWidth : 400);
             const height = isFullscreen
                 ? (container.clientHeight || window.innerHeight - 60)
-                : Math.max(280, Math.min(420, topics.length * 20));
+                : Math.max(280, Math.min(440, topics.length * 20));
 
-            const svg = d3.select(container)
-            .append('svg')
-            .attr('width', '100%')
-            .attr('height', height)
-            .attr('viewBox', `0 0 ${width} ${height}`)
-            .call(d3.zoom()
-                .scaleExtent([0.3, 4])
-                .on('zoom', (event) => {
-                    g.attr('transform', event.transform);
-                }));
-
+            const svg = d3.select(container).append('svg')
+                .attr('width', '100%')
+                .attr('height', height)
+                .attr('viewBox', `0 0 ${width} ${height}`)
+                .attr('role', 'img')
+                .attr('aria-label', 'Concept graph');
             const g = svg.append('g');
-            
-            // Glow filter for core concepts
-            const defs = g.append('defs');
-            const filter = defs.append('filter').attr('id', 'glow');
+            svg.call(d3.zoom().scaleExtent([0.3, 4]).on('zoom', (event) => g.attr('transform', event.transform)));
+
+            const filter = g.append('defs').append('filter').attr('id', `glow-${container.id}`);
             filter.append('feGaussianBlur').attr('stdDeviation', '3.5').attr('result', 'coloredBlur');
             const feMerge = filter.append('feMerge');
             feMerge.append('feMergeNode').attr('in', 'coloredBlur');
             feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
 
-            // Tier-based color scheme
-            const tierColor = (tier) => {
-                if (tier === 'core') return '#3b82f6';       // Blue
-                if (tier === 'supporting') return '#eab308';  // Yellow
-                return '#6b7280';                             // Grey
-            };
-            const tierStroke = (tier) => {
-                if (tier === 'core') return '#60a5fa';
-                if (tier === 'supporting') return '#fbbf24';
-                return '#9ca3af';
-            };
+            const nodes = topics.map((t) => ({ id: t.term, score: t.score, tier: t.tier || 'minor', radius: (6 + t.score * 20) * 1.2 }));
+            const ids = new Set(nodes.map((n) => n.id));
+            const links = edges.filter((e) => ids.has(e.source) && ids.has(e.target)).map((e) => ({ ...e }));
 
-            // Prepare nodes with importance-based sizing
-            const nodes = topics.map(t => ({
-                id: t.term,
-                score: t.score,
-                spread: t.spread || 0,
-                centrality: t.centrality || 0,
-                tier: t.tier || 'minor',
-                is_heading: t.is_heading,
-                radius: (6 + t.score * 20) * 1.2 // Increased by 20%
-            }));
-
-            const nodeIds = new Set(nodes.map(n => n.id));
-            const links = edges
-                .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
-                .map(e => ({ source: e.source, target: e.target, weight: e.weight }));
-
-            // Force simulation
             const simulation = d3.forceSimulation(nodes)
-                .force('link', d3.forceLink(links).id(d => d.id).distance(120).strength(0.2))
+                .force('link', d3.forceLink(links).id((d) => d.id).distance(120).strength(0.2))
                 .force('charge', d3.forceManyBody().strength(-350).distanceMax(300))
                 .force('center', d3.forceCenter(width / 2, height / 2).strength(0.05))
-                .force('collision', d3.forceCollide().radius(d => d.radius + 18).strength(0.9))
+                .force('collision', d3.forceCollide().radius((d) => d.radius + 18).strength(0.9))
                 .force('x', d3.forceX(width / 2).strength(0.03))
                 .force('y', d3.forceY(height / 2).strength(0.03))
                 .velocityDecay(0.6)
                 .alphaDecay(0.02);
 
-            // Links — thickness based on co-occurrence weight
-            const link = g.selectAll('.graph-link')
-                .data(links)
-                .enter().append('line')
+            const link = g.selectAll('.graph-link').data(links).enter().append('line')
                 .attr('class', 'graph-link')
-                .style('stroke-width', d => 1 + d.weight * 5)
-                .style('stroke-opacity', d => 0.3 + d.weight * 0.5);
+                .style('stroke-width', (d) => 1 + d.weight * 5)
+                .style('stroke-opacity', (d) => 0.3 + d.weight * 0.5);
 
-            // Nodes
-            const node = g.selectAll('.graph-node')
-                .data(nodes)
-                .enter().append('g')
+            // Wide invisible strokes on top of the thin visible ones so links are easy to click.
+            const linkHit = g.selectAll('.graph-link-hit').data(links).enter().append('line')
+                .attr('class', 'graph-link-hit')
+                .on('mouseover', (event, d) => link.classed('hover', (l) => l === d))
+                .on('mouseout', () => link.classed('hover', false))
+                .on('click', (event, d) => openRelation(d.source.id, d.target.id));
+            linkHit.append('title').text((d) => `${d.source.id ?? d.source} ↔ ${d.target.id ?? d.target}: together in ${pct(d.weight)} of sections. Click for the evidence.`);
+
+            const node = g.selectAll('.graph-node').data(nodes).enter().append('g')
                 .attr('class', 'graph-node')
+                .classed('selected', (d) => state.drawerKey === `concept:${d.id}`)
                 .call(d3.drag()
-                    .on('start', (event, d) => {
-                        if (!event.active) simulation.alphaTarget(0.3).restart();
-                        d.fx = d.x; d.fy = d.y;
-                    })
-                    .on('drag', (event, d) => {
-                        d.fx = event.x; d.fy = event.y;
-                    })
-                    .on('end', (event, d) => {
-                        if (!event.active) simulation.alphaTarget(0);
-                        d.fx = null; d.fy = null;
-                    }));
+                    .on('start', (event, d) => { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+                    .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+                    .on('end', (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }));
 
             node.append('circle')
-                .attr('r', d => d.radius)
-                .style('fill', d => tierColor(d.tier))
-                .style('stroke', d => tierStroke(d.tier))
-                .style('stroke-width', d => d.tier === 'core' ? 2.5 : 1.5)
-                .style('opacity', d => d.tier === 'minor' ? 0.6 : 0.85)
-                .style('filter', d => d.tier === 'core' ? 'url(#glow)' : 'none');
+                .attr('r', (d) => d.radius)
+                .style('fill', (d) => nodeColors(d).fill)
+                .style('stroke', (d) => nodeColors(d).stroke)
+                .style('stroke-width', (d) => (d.tier === 'core' ? 2.5 : 1.5))
+                .style('opacity', nodeOpacity)
+                .style('filter', (d) => (d.tier === 'core' ? `url(#glow-${container.id})` : 'none'));
 
             const texts = node.append('text')
-                .attr('dy', d => d.radius + 12)
-                .style('fill', d => d.tier === 'core' ? '#93c5fd' : d.tier === 'supporting' ? '#fde68a' : '#9ca3af')
-                .style('font-size', d => d.tier === 'core' ? '10.5px' : '9px')
-                .style('font-weight', d => d.tier === 'core' ? '600' : '400');
-                
-            texts.each(function(d) {
+                .attr('dy', (d) => d.radius + 12)
+                .style('fill', (d) => nodeColors(d).label)
+                .style('font-size', (d) => (d.tier === 'core' ? '10.5px' : '9px'))
+                .style('font-weight', (d) => (d.tier === 'core' ? '600' : '400'));
+
+            texts.each(function (d) {
                 const el = d3.select(this);
                 const words = d.id.split(' ');
                 let line1 = '';
                 let line2 = '';
-                
                 if (d.id.length <= 12 || words.length === 1) {
                     line1 = d.id.length > 12 ? d.id.substring(0, 10) + '…' : d.id;
                 } else {
-                    let tempLine = words[0];
                     let i = 1;
-                    while (i < words.length && (tempLine + ' ' + words[i]).length <= 12) {
-                        tempLine += ' ' + words[i];
-                        i++;
-                    }
-                    line1 = tempLine;
-                    let rest = words.slice(i).join(' ');
+                    line1 = words[0];
+                    while (i < words.length && (line1 + ' ' + words[i]).length <= 12) line1 += ' ' + words[i++];
+                    const rest = words.slice(i).join(' ');
                     line2 = rest.length > 12 ? rest.substring(0, 10) + '…' : rest;
                 }
-                
-                el.append('tspan').attr('class', 'line1').attr('x', 0).text(line1);
-                if (line2) {
-                    el.append('tspan').attr('class', 'line2').attr('x', 0).attr('dy', 12).text(line2);
-                }
+                el.append('tspan').attr('x', 0).text(line1);
+                if (line2) el.append('tspan').attr('x', 0).attr('dy', 12).text(line2);
             });
 
-            // Tooltip with rich info
-            node.append('title')
-                .text(d => `${d.id}\nImportance: ${(d.score * 100).toFixed(0)}%\nSpread: ${(d.spread * 100).toFixed(0)}% of sections\nCentrality: ${(d.centrality * 100).toFixed(0)}%\nTier: ${d.tier}${d.is_heading ? ' (heading)' : ''}`);
+            node.append('title').text((d) => `${d.id}\nImportance ${pct(d.score)} · ${d.tier}\nClick for the evidence`);
+            node.on('click', (event, d) => openConcept(d.id));
 
-            // Click to fill chat input
-            node.on('click', (event, d) => {
-                messageInput.value = `What does the document say about "${d.id}"?`;
-                messageInput.focus();
-                if (window.innerWidth <= 900) switchTab('chat');
-            });
-
-            // Tick — constrain to bounds
             simulation.on('tick', () => {
-                nodes.forEach(d => {
-                    const padding = d.radius + 20; // Account for larger labels
+                nodes.forEach((d) => {
+                    const padding = d.radius + 20;
                     d.x = Math.max(padding, Math.min(width - padding, d.x));
                     d.y = Math.max(padding, Math.min(height - padding, d.y));
                 });
-
-                link
-                    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-                    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-
-                node.attr('transform', d => `translate(${d.x},${d.y})`);
-                
-                // Dynamic text anchoring
-                node.selectAll('text').attr('text-anchor', d => {
-                    if (d.x > width - 50) return 'end';
-                    if (d.x < 50) return 'start';
-                    return 'middle';
-                });
-                
-                node.selectAll('tspan').attr('x', d => {
-                    if (d.x > width - 50) return -d.radius + 5;
-                    if (d.x < 50) return d.radius - 5;
-                    return 0;
-                });
-            });
-
-            // Legend
-            if(isFullscreen){
-            const legend = g.append('g').attr('transform', `translate(8, ${height - 50})`);
-            [['core', '#3b82f6', '● Core'], ['supporting', '#eab308', '● Support'], ['minor', '#6b7280', '● Minor']].forEach(([, color, label], i) => {
-                legend.append('text')
-                    .attr('x', i * 70)
-                    .attr('y', 0)
-                    .style('fill', color)
-                    .style('font-size', '9px')
-                    .text(label);
+                for (const sel of [link, linkHit]) {
+                    sel.attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)
+                        .attr('x2', (d) => d.target.x).attr('y2', (d) => d.target.y);
+                }
+                node.attr('transform', (d) => `translate(${d.x},${d.y})`);
+                node.selectAll('text').attr('text-anchor', (d) => (d.x > width - 50 ? 'end' : d.x < 50 ? 'start' : 'middle'));
+                node.selectAll('tspan').attr('x', (d) => (d.x > width - 50 ? -d.radius + 5 : d.x < 50 ? d.radius - 5 : 0));
             });
         }
-    }
-        function renderTopicGraph(topics, edges) {
-            renderTopicGraphIn(document.getElementById('topicGraph'), topics, edges);
-    }
 
         // ===========================
-        // === D3 Bar Chart
+        // === Bar chart
         // ===========================
-        function renderTopicChart(topics) {
-            const container = document.getElementById('topicChart');
+        function renderTopicChart() {
+            const container = $('topicChart');
             container.innerHTML = '';
-
-            const top15 = topics.slice(0, 15);
-            const margin = { top: 4, right: 40, bottom: 4, left: 90 };
-            const fullWidth = container.clientWidth || 380;
+            const top15 = state.topics.slice(0, 15);
+            const margin = { top: 4, right: 40, bottom: 4, left: 100 };
+            const fullWidth = container.clientWidth || 400;
             const width = fullWidth - margin.left - margin.right;
-            const barHeight = 20;
-            const gap = 3;
-            const height = top15.length * (barHeight + gap);
+            const height = top15.length * 23;
 
-            const svg = d3.select('#topicChart')
-                .append('svg')
+            const svg = d3.select(container).append('svg')
                 .attr('width', fullWidth)
                 .attr('height', height + margin.top + margin.bottom)
                 .append('g')
                 .attr('transform', `translate(${margin.left},${margin.top})`);
-
             const x = d3.scaleLinear().domain([0, 1]).range([0, width]);
+            const y = d3.scaleBand().domain(top15.map((d) => d.term)).range([0, height]).padding(0.15);
 
-            const y = d3.scaleBand()
-                .domain(top15.map(d => d.term))
-                .range([0, height])
-                .padding(0.15);
-
-            const colorScale = d3.scaleLinear()
-                .domain([0, 1])
-                .range(['#1e293b', '#3b82f6']);
-
-            // Bars with staggered animation
-            svg.selectAll('.bar')
-                .data(top15)
-                .enter().append('rect')
-                .attr('y', d => y(d.term))
+            svg.selectAll('.bar').data(top15).enter().append('rect')
+                .attr('y', (d) => y(d.term))
                 .attr('height', y.bandwidth())
                 .attr('x', 0)
                 .attr('width', 0)
-                .attr('fill', d => d.is_heading ? '#3b82f6' : colorScale(d.score))
+                .attr('fill', (d) => TIER_COLORS[d.tier].fill)
+                .attr('opacity', (d) => (d.tier === 'minor' ? 0.6 : 0.85))
                 .attr('rx', 3)
                 .style('cursor', 'pointer')
-                .on('click', (event, d) => {
-                    messageInput.value = `Explain the concept of "${d.term}" as discussed in this document`;
-                    messageInput.focus();
-                    if (window.innerWidth <= 900) switchTab('chat');
-                })
-                .on('mouseover', function() { d3.select(this).style('filter', 'brightness(1.4)'); })
-                .on('mouseout', function() { d3.select(this).style('filter', 'none'); })
-                .transition()
-                .duration(600)
-                .delay((d, i) => i * 35)
-                .attr('width', d => x(d.score));
+                .on('click', (event, d) => openConcept(d.term))
+                .on('mouseover', function () { d3.select(this).style('filter', 'brightness(1.4)'); })
+                .on('mouseout', function () { d3.select(this).style('filter', 'none'); })
+                .transition().duration(600).delay((d, i) => i * 35)
+                .attr('width', (d) => x(d.score));
 
-            // Score labels
-            svg.selectAll('.score-label')
-                .data(top15)
-                .enter().append('text')
-                .attr('x', d => x(d.score) + 4)
-                .attr('y', d => y(d.term) + y.bandwidth() / 2)
+            svg.selectAll('.score-label').data(top15).enter().append('text')
+                .attr('x', (d) => x(d.score) + 4)
+                .attr('y', (d) => y(d.term) + y.bandwidth() / 2)
                 .attr('dy', '0.35em')
                 .style('fill', '#6b6b6b')
                 .style('font-size', '8.5px')
-                .text(d => `${(d.score * 100).toFixed(0)}%`)
-                .style('opacity', 0)
-                .transition()
-                .duration(300)
-                .delay((d, i) => i * 35 + 600)
-                .style('opacity', 1);
+                .text((d) => pct(d.score));
 
-            // Topic labels
-            svg.selectAll('.topic-label')
-                .data(top15)
-                .enter().append('text')
+            svg.selectAll('.topic-label').data(top15).enter().append('text')
+                .attr('class', 'bar-label')
                 .attr('x', -5)
-                .attr('y', d => y(d.term) + y.bandwidth() / 2)
+                .attr('y', (d) => y(d.term) + y.bandwidth() / 2)
                 .attr('dy', '0.35em')
                 .attr('text-anchor', 'end')
-                .style('fill', d => d.is_heading ? '#60a5fa' : '#a1a1a1')
+                .style('fill', (d) => (d.is_heading ? '#60a5fa' : '#a1a1a1'))
                 .style('font-size', '10.5px')
-                .style('font-weight', d => d.is_heading ? '600' : '400')
-                .text(d => d.term.length > 13 ? d.term.substring(0, 11) + '…' : d.term)
-                .style('cursor', 'pointer')
-                .on('click', (event, d) => {
-                    messageInput.value = `Explain "${d.term}" in the context of this document`;
-                    messageInput.focus();
-                    if (window.innerWidth <= 900) switchTab('chat');
-                })
-                .append('title')
-                .text(d => d.term);
+                .style('font-weight', (d) => (d.is_heading ? '600' : '400'))
+                .text((d) => (d.term.length > 15 ? d.term.substring(0, 13) + '…' : d.term))
+                .on('click', (event, d) => openConcept(d.term))
+                .append('title').text((d) => d.term);
         }
-        document.getElementById('fullscreenGraphBtn').addEventListener('click', () => {
-    const overlay = document.getElementById('graphOverlay');
-    const overlayBody = document.getElementById('graphOverlayBody');
-    overlay.classList.add('active');
-    
-    // Re-render graph in overlay at full screen size
-    overlayBody.innerHTML = '';
-    if (window._lastTopics && window._lastEdges) {
-        renderTopicGraphIn(overlayBody, window._lastTopics, window._lastEdges);
-    }
-});
 
-document.getElementById('closeGraphOverlay').addEventListener('click', () => {
-    document.getElementById('graphOverlay').classList.remove('active');
-});
+        // ===========================
+        // === Learning path
+        // ===========================
+        function renderPath() {
+            const steps = state.path.steps || [];
+            if (!steps.length) {
+                $('pathList').innerHTML = '<li><div class="insight-placeholder">No concepts to order yet.</div></li>';
+                return;
+            }
+            const ready = (s) => s.prerequisites.every((p) => masteryOf(p).mastery >= 0.5);
+            const next = steps.find((s) => masteryOf(s.term).status !== 'mastered' && ready(s));
+            $('pathMeta').textContent = `${steps.length} concepts · ${state.path.edges.length} links`;
+            $('pathList').innerHTML = steps.map((s, i) => {
+                const m = masteryOf(s.term);
+                const classes = ['path-step', m.status === 'mastered' && 'done', s === next && 'next', m.status !== 'mastered' && !ready(s) && 'blocked'].filter(Boolean).join(' ');
+                const needs = s.prerequisites.length ? `Needs ${s.prerequisites.map(chipHtml).join(' ')}` : 'Starting point';
+                return `<li class="${classes}" style="--level:${s.level}">
+                    <span class="step-num">${i + 1}</span>
+                    <div class="step-main">
+                        <div class="step-head">
+                            <button class="link-btn step-term" data-term="${esc(s.term)}">${esc(s.term)}</button>
+                            <span class="pill tier-${s.tier}">${s.tier}</span>
+                            <span class="pill m-${m.status}">${masteryLabel(m)}</span>
+                            ${s === next ? '<span class="pill next-pill">Next up</span>' : ''}
+                        </div>
+                        <div class="step-meta">${needs}${s.unlocks_total ? ` · unlocks ${s.unlocks_total}` : ''}${s.introduced?.label ? ` · introduced ${esc(s.introduced.label)}` : ''}</div>
+                        ${s === next ? `<button class="small-btn" data-quiz="${esc(s.term)}">Quiz me on this</button>` : ''}
+                    </div>
+                </li>`;
+            }).join('');
+        }
 
-// Close on Escape key
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        document.getElementById('graphOverlay').classList.remove('active');
-    }
-});
+        $('pathList').addEventListener('click', (e) => {
+            const quiz = e.target.closest('[data-quiz]');
+            if (quiz) { startQuiz(quiz.dataset.quiz); return; }
+            const term = e.target.closest('[data-term]');
+            if (term) openConcept(term.dataset.term);
+        });
+
+        // ===========================
+        // === Quiz
+        // ===========================
+        function renderQuizIdle(message) {
+            $('quizBody').innerHTML = `
+                <p class="quiz-intro">Questions target the most important concepts you haven't mastered yet, and hold back until you know their prerequisites. Every answer is checked against the document, and concepts you get right come back for review later.</p>
+                ${message ? `<p class="quiz-note">${esc(message)}</p>` : ''}
+                <div class="quiz-actions"><button class="btn" data-action="start-quiz" ${state.docId ? '' : 'disabled'}>Start a quiz</button></div>`;
+        }
+
+        async function startQuiz(concept = null) {
+            if (!state.docId || !state.topics.length) return;
+            closeDrawer();
+            closeOverlay();
+            setView('quiz');
+            if (isMobile()) switchTab('insights');
+            $('quizBody').innerHTML = `<div class="insight-placeholder"><div class="loading"></div> Writing a question${concept ? ` about “${esc(concept)}”` : ''}…</div>`;
+            try {
+                state.quiz = await apiJson(docUrl('/quiz'), { method: 'POST', body: { concept } });
+                renderQuizQuestion(state.quiz);
+            } catch (error) {
+                state.quiz = null;
+                renderQuizIdle(error.message);
+            }
+        }
+
+        function renderQuizQuestion(q) {
+            const fallback = q.generated_by === 'cloze' ? `<p class="quiz-note">${esc(q.notice || 'The local model is unavailable.')} This fill-in-the-blank question comes straight from the text instead.</p>` : '';
+            $('quizBody').innerHTML = `
+                <div class="quiz-concept">${chipHtml(q.concept)}<span class="pill m-${q.mastery.status}">${masteryLabel(q.mastery)}</span></div>
+                <p class="quiz-reason">${esc(q.reason)}.</p>
+                ${fallback}
+                <p class="quiz-question">${q.kind === 'cloze' ? '<span class="quiz-kind">Fill in the blank</span>' : ''}${esc(q.question)}</p>
+                ${q.kind === 'cloze'
+                    ? '<input id="quizAnswer" class="quiz-input" type="text" autocomplete="off" placeholder="Your answer">'
+                    : '<textarea id="quizAnswer" class="quiz-input" rows="4" placeholder="Answer in your own words (Ctrl+Enter to submit)"></textarea>'}
+                <div class="quiz-error" id="quizError"></div>
+                <div class="quiz-actions">
+                    <button class="btn" data-action="submit-quiz" id="quizSubmit">Check answer</button>
+                    <button class="btn-secondary" data-action="start-quiz">Skip</button>
+                </div>`;
+            $('quizAnswer').focus();
+        }
+
+        async function submitQuiz() {
+            const q = state.quiz;
+            if (!q) return;
+            const answer = $('quizAnswer').value;
+            const submit = $('quizSubmit');
+            submit.disabled = true;
+            submit.textContent = 'Checking…';
+            try {
+                const result = await apiJson(docUrl(`/quiz/${encodeURIComponent(q.quiz_id)}/answer`), { method: 'POST', body: { answer } });
+                state.quiz = null;
+                state.mastery.concepts[result.concept] = result.mastery;
+                state.mastery.summary = result.summary;
+                renderQuizResult(result, q.mastery.mastery || 0, answer);
+                recolorGraphs();
+                renderPath();
+                renderMasteryStrip();
+            } catch (error) {
+                $('quizError').textContent = error.message;
+                submit.disabled = false;
+                submit.textContent = 'Check answer';
+            }
+        }
+
+        function renderQuizResult(r, before, answer) {
+            const heading = { correct: 'Correct', partial: 'Partly right', incorrect: 'Not quite' }[r.verdict];
+            const after = r.mastery.mastery;
+            $('quizBody').innerHTML = `
+                <div class="quiz-verdict v-${r.verdict}"><strong>${heading}</strong><span>${pct(r.score)}</span></div>
+                ${r.feedback ? `<p class="quiz-feedback">${esc(r.feedback)}</p>` : ''}
+                <div class="quiz-block"><div class="block-label">Your answer</div><p>${answer.trim() ? esc(answer) : '<em>No answer</em>'}</p></div>
+                <div class="quiz-block"><div class="block-label">From the document</div><p>${esc(r.reference_answer)}</p>${r.evidence.map(quoteHtml).join('')}</div>
+                <div>
+                    <div class="block-label">Mastery of “${esc(r.concept)}”</div>
+                    <div class="meter">
+                        <div class="meter-before" style="width:${before * 100}%"></div>
+                        <div class="meter-after" style="width:${after * 100}%;background:${MASTERY_COLORS[r.mastery.status].fill}"></div>
+                    </div>
+                    <div class="mastery-numbers">${pct(before)} → ${pct(after)} · ${masteryLabel(r.mastery)} · next review ${reviewText(r.mastery.due)}</div>
+                </div>
+                <p class="graded-by">Graded by ${esc(r.graded_by)}</p>
+                <div class="quiz-actions">
+                    <button class="btn" data-action="start-quiz">Next question</button>
+                    <button class="btn-secondary" data-action="explain" data-concept="${esc(r.concept)}">Explain it in chat</button>
+                </div>`;
+        }
+
+        $('quizBody').addEventListener('click', (e) => {
+            const action = e.target.closest('[data-action]');
+            if (action) {
+                if (action.dataset.action === 'start-quiz') startQuiz();
+                else if (action.dataset.action === 'submit-quiz') submitQuiz();
+                else if (action.dataset.action === 'explain') askInChat(`Explain "${action.dataset.concept}" as the document describes it.`);
+                return;
+            }
+            const term = e.target.closest('[data-term]');
+            if (term) openConcept(term.dataset.term);
+        });
+
+        $('quizBody').addEventListener('keydown', (e) => {
+            if (e.target.id !== 'quizAnswer' || e.key !== 'Enter') return;
+            if (e.target.tagName === 'INPUT' || e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                submitQuiz();
+            }
+        });
+
+        // ===========================
+        // === Evidence drawer
+        // ===========================
+        function openDrawer(key, kicker, title) {
+            state.drawerKey = key;
+            $('drawerKicker').textContent = kicker;
+            $('drawerTitle').textContent = title;
+            $('drawerBody').innerHTML = '<div class="insight-placeholder"><div class="loading"></div> Gathering evidence…</div>';
+            $('drawer').hidden = false;
+        }
+
+        function closeDrawer() {
+            $('drawer').hidden = true;
+            state.drawerKey = null;
+            highlightNode(null);
+        }
+
+        function closeOverlay() {
+            $('graphOverlay').classList.remove('active');
+        }
+
+        async function openConcept(term) {
+            const key = `concept:${term}`;
+            openDrawer(key, 'Concept', term);
+            highlightNode(term);
+            try {
+                const c = await apiJson(docUrl(`/concept?term=${encodeURIComponent(term)}`));
+                if (state.drawerKey === key) renderConceptDrawer(c);
+            } catch (error) {
+                if (state.drawerKey === key) $('drawerBody').innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+            }
+        }
+
+        function edgeListHtml(edges, side) {
+            if (!edges.length) {
+                return `<p class="muted">${side === 'source' ? 'Nothing. This is a starting point.' : 'No other concept in the map builds on it.'}</p>`;
+            }
+            return edges.map((e) => `<div class="edge-item">${chipHtml(e[side])}<span class="edge-reason">${esc(REASONS[e.reason]?.(e) || '')}</span>${e.evidence ? quoteHtml(e.evidence) : ''}</div>`).join('');
+        }
+
+        function renderConceptDrawer(c) {
+            const b = c.breakdown;
+            const signals = [
+                ['Frequency', 'frequency', 'How often it appears, weighted by TF-IDF'],
+                ['Spread', 'spread', 'Share of sections that mention it'],
+                ['In headings', 'heading', 'Appears in headings (H1 counts most)'],
+                ['Centrality', 'centrality', 'PageRank: how connected it is to other concepts'],
+            ].map(([label, key, help]) => `
+                <div class="signal" title="${esc(help)}">
+                    <span class="signal-name">${label}</span>
+                    <div class="signal-bar"><div style="width:${pct(b[key])}"></div></div>
+                    <span class="signal-value">${pct(b[key])} × ${c.weights[key]}</span>
+                </div>`).join('');
+            const multiplierText = { definition: 'Defined explicitly ×1.3', figure: 'Near a figure or table ×1.2', example: 'Has worked examples ×1.15' };
+            const multipliers = (b.exam_signals || []).map((s) => multiplierText[s]);
+            if (b.llm_endorsed) multipliers.push('Endorsed by the LLM review ×2');
+            const s = c.stats;
+            const where = `<strong>${s.mentions}</strong> mentions across <strong>${s.sections}</strong> of ${s.total_sections} sections${s.pages.length ? ` · ${pagesText(s.pages)}` : ''}`;
+
+            $('drawerBody').innerHTML = `
+                <div class="drawer-pills">
+                    <span class="pill tier-${b.tier}">${b.tier}</span>
+                    <span class="pill">importance ${pct(b.score)}</span>
+                    <span class="pill m-${c.mastery.status}">${masteryLabel(c.mastery)}</span>
+                    ${c.path_position ? `<span class="pill">step ${c.path_position} in study order</span>` : ''}
+                </div>
+                <div class="drawer-section">
+                    <h4>Why it ranks here</h4>
+                    ${signals}
+                    ${multipliers.length ? `<div class="multipliers">${multipliers.map((m) => `<span class="chip static">${esc(m)}</span>`).join('')}</div>` : ''}
+                    <p class="drawer-note">Importance = weighted sum of the four signals × multipliers, scaled so the top concept is 100%.</p>
+                </div>
+                <div class="drawer-section">
+                    <h4>Definition in the document</h4>
+                    ${c.definitions.length ? c.definitions.map(quoteHtml).join('') : '<p class="muted">The document never defines it explicitly.</p>'}
+                </div>
+                <div class="drawer-section">
+                    <h4>Where it appears</h4>
+                    <p class="stats-line">${where}</p>
+                    ${c.mentions.map(quoteHtml).join('')}
+                </div>
+                <div class="drawer-section"><h4>Learn first</h4>${edgeListHtml(c.prerequisites, 'source')}</div>
+                <div class="drawer-section"><h4>Unlocks</h4>${edgeListHtml(c.unlocks, 'target')}</div>
+                <div class="drawer-actions">
+                    <button class="btn" data-action="ask" data-concept="${esc(c.term)}">Ask Lexo about this</button>
+                    <button class="btn-secondary" data-action="quiz" data-concept="${esc(c.term)}">Quiz me on this</button>
+                </div>`;
+        }
+
+        async function openRelation(a, b) {
+            const key = `relation:${a}|${b}`;
+            openDrawer(key, 'Connection', `${a} ↔ ${b}`);
+            highlightNode(null);
+            try {
+                const r = await apiJson(docUrl(`/relation?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`));
+                if (state.drawerKey === key) renderRelationDrawer(r);
+            } catch (error) {
+                if (state.drawerKey === key) $('drawerBody').innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+            }
+        }
+
+        function renderRelationDrawer(r) {
+            const p = r.prerequisite;
+            const evidence = r.sentences.length
+                ? `<h4>Sentences that connect them</h4>${r.sentences.map(quoteHtml).join('')}`
+                : `<h4>Sections where both appear</h4>${r.section_pairs.length ? r.section_pairs.map((pair) => `
+                    ${pair.section ? `<div class="pair-section">${esc(pair.section)}</div>` : ''}${quoteHtml(pair.a)}${quoteHtml(pair.b)}`).join('') : '<p class="muted">No shared passages found.</p>'}`;
+            $('drawerBody').innerHTML = `
+                <div class="drawer-section">
+                    <p class="stats-line">Mentioned together in <strong>${r.shared_sentences}</strong> sentence${r.shared_sentences === 1 ? '' : 's'} and <strong>${r.shared_sections}</strong> of ${r.total_sections} sections. The link's thickness is that share of sections: ${pct(r.weight)}.</p>
+                </div>
+                <div class="drawer-section">
+                    <div class="drawer-pills">${chipHtml(r.a)}${chipHtml(r.b)}</div>
+                </div>
+                ${p ? `<div class="drawer-section"><h4>Learning order</h4><p class="stats-line">Learn <strong>${esc(p.source)}</strong> before <strong>${esc(p.target)}</strong>. ${esc(REASONS[p.reason]?.(p) || '')}</p>${p.evidence ? quoteHtml(p.evidence) : ''}</div>` : ''}
+                <div class="drawer-section">${evidence}</div>
+                <div class="drawer-actions">
+                    <button class="btn" data-action="ask-relation" data-a="${esc(r.a)}" data-b="${esc(r.b)}">Ask how they relate</button>
+                </div>`;
+        }
+
+        $('drawerClose').addEventListener('click', closeDrawer);
+        $('drawerBody').addEventListener('click', (e) => {
+            const action = e.target.closest('[data-action]');
+            if (action) {
+                const { concept, a, b } = action.dataset;
+                if (action.dataset.action === 'ask') askInChat(`What does the document say about "${concept}"?`);
+                else if (action.dataset.action === 'quiz') startQuiz(concept);
+                else if (action.dataset.action === 'ask-relation') askInChat(`How does "${a}" relate to "${b}" in this document?`);
+                return;
+            }
+            const term = e.target.closest('[data-term]');
+            if (term) openConcept(term.dataset.term);
+        });
+
+        // ===========================
+        // === Fullscreen graph
+        // ===========================
+        $('fullscreenGraphBtn').addEventListener('click', () => {
+            if (!state.topics.length) return;
+            $('graphOverlay').classList.add('active');
+            renderTopicGraphIn($('graphOverlayBody'), state.topics, state.edges);
+        });
+        $('closeGraphOverlay').addEventListener('click', closeOverlay);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (!$('drawer').hidden) closeDrawer();
+            else closeOverlay();
+        });
     </script>
 </body>
 </html>
-
-
-

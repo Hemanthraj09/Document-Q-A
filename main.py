@@ -1,101 +1,95 @@
 """
-Visual Document Q&A - FastAPI Backend
-RAG pipeline: ChromaDB + sentence-transformers + Ollama with streaming
+Visual Document Q&A - FastAPI backend.
+Local RAG chat with citations, an evidence-backed concept graph, a prerequisite
+learning path, and per-concept mastery tracking with quizzes.
 """
 
-import os
-import uuid
-import tempfile
-import re
+import hashlib
 import json
-import math
-from typing import Optional, List, Dict
-from collections import Counter
+import logging
+import os
+import threading
+import uuid
+from collections import OrderedDict
+from datetime import datetime, timezone
+from pathlib import Path
 
-import networkx as nx
-
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
+import chromadb
 import httpx
+import pymupdf
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sentence_transformers import SentenceTransformer
 
-# PDF processing
-try:
-    import fitz  # PyMuPDF
-    PDF_SUPPORT = True
-except ImportError:
-    PDF_SUPPORT = False
-    print("Warning: PyMuPDF not installed. PDF upload will not work. Run: pip install pymupdf")
+import analysis
+import learning
+import mastery
+import rag
 
-# NLP processing
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
-    NLP_SUPPORT = True
-except ImportError:
-    NLP_SUPPORT = False
-    print("Warning: scikit-learn not installed. Document analysis will not work.")
-
-# RAG components
-try:
-    from sentence_transformers import SentenceTransformer
-    import chromadb
-    RAG_SUPPORT = True
-except ImportError:
-    RAG_SUPPORT = False
-    print("Warning: RAG dependencies not installed. Run: pip install sentence-transformers chromadb")
-
-# Load environment variables
 load_dotenv()
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("docqa")
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Visual Document Q&A",
-    description="RAG-powered document analysis with visual insights and streaming",
-    version="4.0.0"
-)
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+CHROMA_DIR = Path(os.getenv("CHROMA_DIR", BASE_DIR / "chroma_db"))
+DOCS_DIR = DATA_DIR / "docs"
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Ollama configuration
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:latest")
+NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+MAX_ANSWER_TOKENS = int(os.getenv("MAX_ANSWER_TOKENS", "768"))
+EMBED_DEVICE = os.getenv("EMBED_DEVICE", "cpu")
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
+    "ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",") if o.strip()]
 
-# Initialize RAG components
-embedder = None
-chroma_client = None
+CHARS_PER_TOKEN = 3.5  # conservative estimate for English prose
+RETRIEVE_K = 5
+CANDIDATE_K = 20
+HISTORY_MESSAGES = 10
+MAX_SESSIONS = 200
+MAX_PENDING_QUIZZES = 500
 
-if RAG_SUPPORT:
-    print(f"Loading embedding model (all-MiniLM-L6-v2)...")
-    embedder = SentenceTransformer('all-MiniLM-L6-v2')
-    chroma_client = chromadb.PersistentClient(path="./chroma_db")
-    print("RAG components ready")
+app = FastAPI(title="Visual Document Q&A", version="5.0.0",
+              description="Local RAG with an evidence-backed concept graph, learning path and mastery tracking")
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
-# In-memory stores
-document_store = {}  # doc_id -> {"top_topics": [...], "headings": [...], "chunks_count": int}
-session_store = {}   # session_id -> {"doc_id": str, "messages": list}
+log.info("Loading embedding model all-MiniLM-L6-v2 on %s...", EMBED_DEVICE)
+embedder = SentenceTransformer("all-MiniLM-L6-v2", device=EMBED_DEVICE)
+chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+mastery_store = mastery.MasteryStore(DATA_DIR / "mastery")
 
-# Lexo system prompt
+documents: dict[str, dict] = {}
+hash_index: dict[str, str] = {}
+_analysis_cache: dict[str, dict] = {}
+_analysis_locks: dict[str, threading.Lock] = {}
+_bm25_cache: dict[str, rag.BM25] = {}
+_ingest_lock = threading.Lock()
+_locks_guard = threading.Lock()
+sessions: OrderedDict[str, dict] = OrderedDict()
+pending_quizzes: OrderedDict[str, dict] = OrderedDict()
+
 LEXO_SYSTEM_PROMPT = """You are Lexo, a document analyst. You have one job: help the user understand their document deeply and clearly.
 ## How you answer
 Start with a single direct sentence that answers the question.
 Then support it with specific details from the document — not vague summaries, actual content.
 Only add connections to other parts of the document if they genuinely add value. Don't force it.
 Use **bold** for key terms when first introduced. No headers unless the answer has 3+ clearly separate sections
+## Citations
+Each document excerpt is labelled in square brackets, like {example}. After a sentence that uses an excerpt, cite it with that exact label in square brackets. Never invent labels.
 ## Tone
 Clear, precise, and human. You can be warm, but don't perform enthusiasm.
 No "Great question!", no "Certainly!", no "I'd be happy to".
 If a user thanks you or says something conversational, respond naturally — skip the keyword footer for non-content messages.
 ## Grounding
-You answer strictly from the document context provided. If the answer isn't there, say so plainly:
+You answer strictly from the document excerpts provided. If the answer isn't there, say so plainly:
 "That's not covered in this document — but you could ask about [related topic that IS in the document]."
 Do not speculate or fill gaps from general knowledge unless you explicitly flag it: "(this is general knowledge, not from the document)"
 ## Length
@@ -104,1198 +98,687 @@ Match length to complexity. A simple factual question gets 2-3 sentences. A conc
 📌 **Key terms:** [5–8 comma-separated keywords or short phrases — the core concepts needed to understand this answer]
 Skip this footer for greetings, thanks, or conversational messages."""
 
-
-# ========================
-# === Pydantic Models ===
-# ========================
-
-class ChatRequest(BaseModel):
-    question: str
-    session_id: Optional[str] = None
-    doc_id: Optional[str] = None
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    session_id: str
-
-
-class TopicNode(BaseModel):
-    term: str
-    score: float
-    is_heading: bool = False
-    spread: float = 0.0       # Fraction of sections containing this topic
-    centrality: float = 0.0   # PageRank centrality score
-    tier: str = "minor"       # "core", "supporting", "minor"
-
-
-class TopicEdge(BaseModel):
-    source: str
-    target: str
-    weight: float
-
-
-class AnalyzeRequest(BaseModel):
-    text: str
-    headings: Optional[List[str]] = None
-    heading_levels: Optional[List[Dict]] = None  # [{"text": str, "level": int}]
-
-
-class AnalyzeResponse(BaseModel):
-    topics: List[TopicNode]
-    edges: List[TopicEdge]
-    headings: List[str]
-    study_priority: str = ""  # "Top 5 topics cover ~X% of this document"
-
-
-class IngestRequest(BaseModel):
-    text: str
-    headings: Optional[List[str]] = None
-
-
-class IngestResponse(BaseModel):
-    doc_id: str
-    chunks_count: int
-
-
-# ============================
-# === Utility Functions ===
-# ============================
-
-def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
-    """Split text into overlapping chunks, breaking at sentence boundaries when possible"""
-    chunks = []
-    start = 0
-    text = text.strip()
-
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-
-        # Try to break at a sentence boundary
-        if end < len(text):
-            last_period = text.rfind('. ', start + chunk_size // 2, end)
-            last_newline = text.rfind('\n', start + chunk_size // 2, end)
-            break_point = max(last_period, last_newline)
-            if break_point > start:
-                end = break_point + 1
-
-        chunk = text[start:end].strip()
-        if chunk and len(chunk) > 20:
-            chunks.append(chunk)
-
-        if end >= len(text):
-            break
-        start = end - overlap
-
-    return chunks
-
-
-# ====================================
-# === Text Cleaning for Analysis ===
-# ====================================
-
-# Static stopwords: English defaults + academic/structural noise
-STATIC_STOPS = {
-    # Common filler
-    'page', 'document', 'also', 'may', 'etc', 'using', 'used',
-    'based', 'one', 'two', 'three', 'four', 'five', 'new', 'like', 'use', 'make',
-    'said', 'would', 'could', 'get', 'got', 'let', 'see', 'way',
-    'know', 'need', 'take', 'come', 'go', 'made', 'well', 'just',
-    'even', 'back', 'good', 'give', 'much', 'many', 'mr', 'ms', 'dr',
-    # Academic / structural noise
-    'fig', 'figure', 'table', 'section', 'chapter', 'module', 'ref', 'al',
-    'exercise', 'problem', 'example', 'note', 'hint', 'appendix',
-    'bibliography', 'reference', 'references', 'index', 'abstract',
-    'introduction', 'conclusion', 'acknowledgement', 'acknowledgements',
-    'vol', 'volume', 'journal', 'conference', 'proceedings', 'isbn',
-    'copyright', 'published', 'publisher', 'press', 'edition',
-    'university', 'department', 'faculty', 'institute',
-}
-
-# Regex patterns for metadata lines (Layer 2)
-_METADATA_PATTERNS = re.compile(
-    r'^\s*\d+\s*$'                              # Standalone page numbers
-    r'|^\s*-\s*\d+\s*-\s*$'                     # Page nums like "- 3 -"
-    r'|^\s*page\s+\d+'
-    r'|^\s*\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\s*$'  # Dates: dd/mm/yyyy
-    r'|^\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d'
-    r'|^\s*\S+@\S+\.\S+\s*$'                    # Email addresses
-    r'|^\s*https?://\S+\s*$'                     # URLs
-    r'|^\s*(?:doi|DOI)[:\s]'
-    r'|^\s*(?:figure|fig|table|chapter|module|exercise)\s+\d',
-    re.IGNORECASE | re.MULTILINE
-)
-
-
-def _strip_repeated_lines(pages: List[str], threshold: float = 0.3) -> List[str]:
-    """Layer 1: Remove lines that appear verbatim across >30% of pages (headers, footers, etc.)"""
-    if len(pages) < 3:
-        return pages
-
-    # Count how many pages each normalized line appears in
-    line_page_count = Counter()
-    for page_text in pages:
-        # Unique normalized lines per page
-        seen_on_page = set()
-        for line in page_text.split('\n'):
-            normalized = re.sub(r'[^a-z0-9\s]', '', line.lower()).strip()
-            if normalized and len(normalized) > 2:
-                seen_on_page.add(normalized)
-        for nl in seen_on_page:
-            line_page_count[nl] += 1
-
-    # Blacklist lines appearing in >threshold of pages
-    min_pages = max(2, int(len(pages) * threshold))
-    blacklist = {line for line, count in line_page_count.items() if count >= min_pages}
-
-    # Remove blacklisted lines from each page
-    cleaned = []
-    for page_text in pages:
-        kept_lines = []
-        for line in page_text.split('\n'):
-            normalized = re.sub(r'[^a-z0-9\s]', '', line.lower()).strip()
-            if normalized not in blacklist:
-                kept_lines.append(line)
-        cleaned.append('\n'.join(kept_lines))
-
-    return cleaned
-
-
-def _strip_metadata_lines(text: str) -> str:
-    """Layer 2: Remove page numbers, dates, emails, URLs, DOIs, and short label lines"""
-    lines = text.split('\n')
-    kept = []
-    for line in lines:
-        stripped = line.strip()
-        # Skip empty lines
-        if not stripped:
-            kept.append(line)
-            continue
-        # Skip lines matching metadata patterns
-        if _METADATA_PATTERNS.match(stripped):
-            continue
-        # Skip very short lines that look like labels ("Dr. Smith", "Table 4")
-        words = stripped.split()
-        if len(words) <= 3 and any(c.isdigit() for c in stripped):
-            continue
-        kept.append(line)
-    return '\n'.join(kept)
-
-
-def _build_dynamic_stops(text: str) -> set:
-    """Layer 3 (dynamic): Extract top-5 frequent unigrams from first+last page as branding stopwords"""
-    pages = re.split(r'---\s*Page\s+\d+\s*---', text)
-    pages = [p.strip() for p in pages if p.strip()]
-
-    if not pages:
-        return set()
-
-    # Use first and last page text
-    edge_text = pages[0]
-    if len(pages) > 1:
-        edge_text += ' ' + pages[-1]
-
-    # Tokenize and count, excluding existing static stops and short words
-    base_stops = ENGLISH_STOP_WORDS.union(STATIC_STOPS)
-    words = re.findall(r'\b[a-zA-Z]{4,}\b', edge_text.lower())
-    word_counts = Counter(w for w in words if w not in base_stops)
-
-    # Return top 3 most frequent edge-page words (only if they appear 3+ times)
-    return {w for w, c in word_counts.most_common(3) if c >= 3}
-
-
-def clean_text_for_analysis(text: str) -> str:
-    """Apply all cleaning layers to document text before TF-IDF analysis"""
-    # Layer 1: Strip repeated lines across pages
-    pages = re.split(r'(---\s*Page\s+\d+\s*---)', text)
-    # Reconstruct page contents (odd indices are delimiters)
-    page_contents = []
-    for i, part in enumerate(pages):
-        if not re.match(r'---\s*Page\s+\d+\s*---', part):
-            page_contents.append(part)
-
-    if len(page_contents) > 2:
-        page_contents = _strip_repeated_lines(page_contents)
-
-    cleaned = '\n\n'.join(page_contents)
-
-    # Layer 2: Strip metadata lines
-    cleaned = _strip_metadata_lines(cleaned)
-
-    return cleaned
-
-
-def _get_all_stops(text: str) -> list:
-    """Build complete stopword list: ENGLISH_STOP_WORDS + static + dynamic"""
-    dynamic = _build_dynamic_stops(text)
-    return list(ENGLISH_STOP_WORDS.union(STATIC_STOPS).union(dynamic))
-
-
-def _split_into_sections(text: str, headings: List[str] = None) -> List[str]:
-    """Split text into sections for TF-IDF. Primary: by headings. Fallback: fixed 1500-char chunks."""
-    sections = []
-
-    # Primary: split by detected headings
-    if headings and len(headings) >= 2:
-        # Escape headings for regex and build split pattern
-        heading_positions = []
-        text_lower = text.lower()
-        for h in headings:
-            h_lower = h.lower().strip()
-            idx = text_lower.find(h_lower)
-            if idx >= 0:
-                heading_positions.append(idx)
-
-        if len(heading_positions) >= 2:
-            heading_positions.sort()
-            # Add start and end boundaries
-            boundaries = [0] + heading_positions + [len(text)]
-            for i in range(len(boundaries) - 1):
-                section = text[boundaries[i]:boundaries[i+1]].strip()
-                if len(section) > 30:
-                    sections.append(section)
-
-    # Fallback: if heading-based split gave < 3 sections, use fixed-size chunks
-    if len(sections) < 3:
-        sections = []
-        start = 0
-        while start < len(text):
-            end = min(start + 1500, len(text))
-            chunk = text[start:end].strip()
-            if len(chunk) > 30:
-                sections.append(chunk)
-            start = end
-
-    return sections if sections else [text]
-
-
-def extract_top_topics(text: str, headings: List[str] = None) -> List[str]:
-    """Quick TF-IDF to get top topic terms for retrieval boosting"""
-    if not NLP_SUPPORT or len(text.strip()) < 50:
-        return []
-
-    # Clean text before analysis
-    cleaned = clean_text_for_analysis(text)
-
-    sections = _split_into_sections(cleaned, headings)
-
-    all_stops = _get_all_stops(text)
-
-    n_sections = len(sections)
-    if n_sections < 3:
-        min_df, max_df = 1, 1.0
-    elif n_sections < 8:
-        min_df, max_df = 1, 0.95
-    else:
-        min_df, max_df = 2, 0.7
-
-    try:
-        vectorizer = TfidfVectorizer(
-            stop_words=all_stops,
-            max_features=20,
-            ngram_range=(1, 2),
-            min_df=min_df,
-            max_df=max_df,
-            token_pattern=r'(?u)\b[a-zA-Z][a-zA-Z]+\b'
-        )
-        tfidf_matrix = vectorizer.fit_transform(sections)
-        feature_names = list(vectorizer.get_feature_names_out())
-        scores = tfidf_matrix.mean(axis=0).A1
-
-        topic_scores = {}
-        for term, score in zip(feature_names, scores):
-            if score > 0:
-                topic_scores[term] = score
-
-        # Heading boost: terms in headings get 2x weight
-        if headings:
-            heading_terms = set()
-            for h in headings:
-                for w in h.lower().split():
-                    if len(w) > 2:
-                        heading_terms.add(w)
-            for term in topic_scores:
-                if any(w in heading_terms for w in term.lower().split()):
-                    topic_scores[term] *= 2.0
-
-        sorted_topics = sorted(topic_scores.items(), key=lambda x: x[1], reverse=True)[:10]
-        return [t[0] for t in sorted_topics]
-    except Exception:
-        return []
-
-
-def ingest_document(text: str, headings: List[str] = None) -> tuple:
-    """Chunk, embed, and store document in ChromaDB. Returns (doc_id, chunks_count)"""
-    if not RAG_SUPPORT:
-        raise HTTPException(status_code=503, detail="RAG components not available. Install: pip install sentence-transformers chromadb")
-
-    doc_id = f"doc_{uuid.uuid4().hex[:12]}"
-
-    # Chunk the document
-    chunks = chunk_text(text, chunk_size=1000, overlap=200)
-    if not chunks:
-        raise HTTPException(status_code=400, detail="No content to index")
-
-    # Embed all chunks
-    embeddings = embedder.encode(chunks).tolist()
-
-    # Store in ChromaDB with cosine similarity
-    collection = chroma_client.create_collection(
-        name=doc_id,
-        metadata={"hnsw:space": "cosine"}
-    )
-    collection.add(
-        documents=chunks,
-        embeddings=embeddings,
-        ids=[f"chunk_{i}" for i in range(len(chunks))],
-        metadatas=[{"chunk_index": i} for i in range(len(chunks))]
-    )
-
-    # Extract top topics for retrieval boosting
-    top_topics = extract_top_topics(text, headings)
-
-    # Store metadata
-    document_store[doc_id] = {
-        "top_topics": top_topics,
-        "headings": headings or [],
-        "chunks_count": len(chunks)
-    }
-
-    return doc_id, len(chunks)
-
-
-# ========================
-# === API Endpoints ===
-# ========================
-
-@app.get("/", response_class=HTMLResponse)
-async def serve_ui():
-    """Serve the web UI"""
-    try:
-        with open("index.html", "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return HTMLResponse(
-            content="<h1>Visual Document Q&A</h1><p>UI not found. Please ensure index.html exists.</p>",
-            status_code=404
-        )
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "pdf_support": PDF_SUPPORT,
-        "nlp_support": NLP_SUPPORT,
-        "rag_support": RAG_SUPPORT,
-        "ollama_url": OLLAMA_URL,
-        "ollama_model": OLLAMA_MODEL
-    }
-
-
-@app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
-    """Upload a PDF, extract text, detect headings, and ingest into RAG pipeline"""
-
-    if not PDF_SUPPORT:
-        raise HTTPException(
-            status_code=503,
-            detail="PDF support not available. Install PyMuPDF: pip install pymupdf"
-        )
-
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
-    try:
-        # Read PDF content
-        content = await file.read()
-
-        # Create temp file to process
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        try:
-            # Extract text from PDF
-            doc = fitz.open(tmp_path)
-            text_parts = []
-
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                text = page.get_text("text")
-                if text.strip():
-                    text_parts.append(f"--- Page {page_num + 1} ---\n{text}")
-
-            # Heading extraction with tiered levels using font size analysis
-            headings = []
-            heading_levels = []  # [{"text": str, "level": 1|2|3}]
-            try:
-                all_font_sizes = []
-                text_with_sizes = []
-
-                for page_num in range(len(doc)):
-                    page = doc[page_num]
-                    page_dict = page.get_text("dict")
-                    for block in page_dict.get("blocks", []):
-                        if block.get("type") != 0:  # Skip image blocks
-                            continue
-                        for line in block.get("lines", []):
-                            line_text = ""
-                            max_size = 0
-                            for span in line.get("spans", []):
-                                span_text = span.get("text", "").strip()
-                                if span_text:
-                                    line_text += span_text + " "
-                                    size = span.get("size", 0)
-                                    max_size = max(max_size, size)
-                                    all_font_sizes.append(size)
-                            line_text = line_text.strip()
-                            if line_text and max_size > 0:
-                                text_with_sizes.append((line_text, max_size))
-
-                if all_font_sizes:
-                    # Find body size (mode) and heading thresholds
-                    size_counts = Counter(round(s, 1) for s in all_font_sizes)
-                    body_size = size_counts.most_common(1)[0][0]
-                    # Tiered thresholds: H1 > 1.6x, H2 > 1.3x, H3 > 1.15x body
-                    h1_threshold = body_size * 1.6
-                    h2_threshold = body_size * 1.3
-                    h3_threshold = body_size * 1.15
-
-                    for item_text, size in text_with_sizes:
-                        if size > h3_threshold and 3 < len(item_text) < 150:
-                            headings.append(item_text)
-                            if size >= h1_threshold:
-                                heading_levels.append({"text": item_text, "level": 1})
-                            elif size >= h2_threshold:
-                                heading_levels.append({"text": item_text, "level": 2})
-                            else:
-                                heading_levels.append({"text": item_text, "level": 3})
-            except Exception:
-                pass  # Heading extraction is best-effort
-
-            total_pages = len(doc)
-            doc.close()
-            full_text = "\n\n".join(text_parts)
-
-            # Build response
-            result = {
-                "filename": file.filename,
-                "pages": total_pages,
-                "text": full_text,
-                "chars": len(full_text),
-                "headings": headings,
-                "heading_levels": heading_levels,
-            }
-
-            if not full_text.strip():
-                result["warning"] = "No text could be extracted. This may be a scanned or image-based PDF."
-            elif len(full_text) < 50:
-                result["warning"] = "Very little text was extracted. The PDF may contain mostly images."
-
-            # Ingest into RAG pipeline
-            if RAG_SUPPORT and full_text.strip():
-                doc_id, chunks_count = ingest_document(full_text, headings)
-                result["doc_id"] = doc_id
-                result["chunks_count"] = chunks_count
-
-            return result
-
-        finally:
-            # Clean up temp file
-            os.unlink(tmp_path)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
-
-
-@app.post("/ingest", response_model=IngestResponse)
-async def ingest_text_endpoint(request: IngestRequest):
-    """Ingest plain text into the RAG pipeline"""
-    if not request.text or len(request.text.strip()) < 20:
-        raise HTTPException(status_code=400, detail="Text too short to index")
-
-    doc_id, chunks_count = ingest_document(request.text, request.headings)
-    return IngestResponse(doc_id=doc_id, chunks_count=chunks_count)
-
-
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_document(request: AnalyzeRequest):
-    """Analyze document text to extract topics, relationships, and insights"""
-
-    if not NLP_SUPPORT:
-        raise HTTPException(
-            status_code=503,
-            detail="NLP support not available. Install scikit-learn: pip install scikit-learn"
-        )
-
-    text = request.text
-    headings = request.headings or []
-
-    print(f"[ANALYZE] Raw text length: {len(text)} chars")
-
-    # Need minimum content for analysis
-    if not text or len(text.strip()) < 50:
-        print("[ANALYZE] ABORT: text too short (<50 chars)")
-        return AnalyzeResponse(topics=[], edges=[], headings=headings)
-
-    # Clean text: strip repeated lines, metadata, page numbers
-    cleaned = clean_text_for_analysis(text)
-    print(f"[ANALYZE] Text after cleaning (repeated lines + metadata strip): {len(cleaned)} chars (removed {len(text) - len(cleaned)})")
-
-    # Split into sections by headings, fallback to 1500-char chunks
-    sections = _split_into_sections(cleaned, headings)
-
-    print(f"[ANALYZE] Number of sections passed to TF-IDF: {len(sections)}")
-    for i, sec in enumerate(sections[:3]):
-        print(f"[ANALYZE]   Section {i}: {len(sec)} chars, preview: {sec[:80]!r}...")
-
-    # Build stopword list: English + static + dynamic (from first/last page)
-    dynamic = _build_dynamic_stops(text)
-    print(f"[ANALYZE] Dynamic stopwords identified: {dynamic}")
-    all_stops = list(ENGLISH_STOP_WORDS.union(STATIC_STOPS).union(dynamic))
-
-    n_sections = len(sections)
-    if n_sections < 3:
-        min_df, max_df = 1, 1.0
-    elif n_sections < 8:
-        min_df, max_df = 1, 0.95
-    else:
-        min_df, max_df = 2, 0.7
-    print(f"[ANALYZE] min_df={min_df}, max_df={max_df} (sections: {n_sections})")
-
-    try:
-        vectorizer = TfidfVectorizer(
-            stop_words=all_stops,
-            max_features=50,
-            ngram_range=(1, 2),
-            min_df=min_df,
-            max_df=max_df,
-            token_pattern=r'(?u)\b[a-zA-Z][a-zA-Z]+\b'
-        )
-
-        tfidf_matrix = vectorizer.fit_transform(sections)
-        feature_names = list(vectorizer.get_feature_names_out())
-
-        print(f"[ANALYZE] TF-IDF vocabulary size after fitting: {len(vectorizer.vocabulary_)}")
-        print(f"[ANALYZE] Top 20 terms from TF-IDF: {feature_names[:20]}")
-
-    except ValueError as e:
-        print(f"[ANALYZE] TF-IDF FAILED with ValueError: {e}")
-        return AnalyzeResponse(topics=[], edges=[], headings=headings)
-
-    # === STEP 1: Base TF-IDF frequency scores ===
-    overall_scores = tfidf_matrix.mean(axis=0).A1
-    freq_scores = {}
-    for term, score in zip(feature_names, overall_scores):
-        if score > 0:
-            freq_scores[term] = score
-
-    if not freq_scores:
-        print("[ANALYZE] ABORT: no terms with score > 0")
-        return AnalyzeResponse(topics=[], edges=[], headings=headings)
-
-    # Normalize frequency to [0, 1]
-    max_freq = max(freq_scores.values())
-    norm_freq = {t: s / max_freq for t, s in freq_scores.items()}
-
-    # === STEP 2: Spread Score ===
-    term_to_idx = {name: i for i, name in enumerate(feature_names)}
-    spread_scores = {}
-    for term in freq_scores:
-        idx = term_to_idx[term]
-        sections_with_term = sum(1 for s in range(tfidf_matrix.shape[0]) if tfidf_matrix[s, idx] > 0)
-        spread_scores[term] = sections_with_term / n_sections
-
-    print(f"[ANALYZE] Spread scores computed for {len(spread_scores)} terms")
-
-    # === STEP 3: Tiered Heading Weights ===
-    heading_levels = request.heading_levels or []
-    # Build term -> max heading weight mapping
-    h_weight_map = {}  # term -> heading weight (0 if not in heading)
-    level_multipliers = {1: 3.0, 2: 2.0, 3: 1.5}  # H1=3x, H2=2x, H3=1.5x
-
-    for hl in heading_levels:
-        h_text = hl.get("text", "").lower()
-        h_level = hl.get("level", 3)
-        multiplier = level_multipliers.get(h_level, 1.5)
-        for term in freq_scores:
-            term_words = term.lower().split()
-            if any(w in h_text for w in term_words if len(w) > 2) or term.lower() in h_text:
-                h_weight_map[term] = max(h_weight_map.get(term, 0), multiplier)
-
-    # Fallback: flat 2x for untiered headings
-    if not heading_levels and headings:
-        heading_text_lower = ' '.join(headings).lower()
-        for term in freq_scores:
-            term_words = term.lower().split()
-            if any(w in heading_text_lower for w in term_words if len(w) > 2):
-                h_weight_map[term] = max(h_weight_map.get(term, 0), 2.0)
-
-    # Normalize heading weights to [0, 1]: 0 = not in heading, 1 = in H1
-    max_hw = max(level_multipliers.values())  # 3.0
-    norm_heading = {t: h_weight_map.get(t, 0) / max_hw for t in freq_scores}
-
-    heading_terms = set()
-    for h in headings:
-        for w in h.lower().split():
-            if len(w) > 2:
-                heading_terms.add(w)
-
-    print(f"[ANALYZE] Heading weights: {len(h_weight_map)} terms boosted")
-
-    # === STEP 4: Co-occurrence edges + PageRank Centrality ===
-    G = nx.Graph()
-    for term in freq_scores:
-        G.add_node(term)
-
-    edges = []
-    for t1 in freq_scores:
-        for t2 in freq_scores:
-            if t1 >= t2:
-                continue
-            if t1 not in term_to_idx or t2 not in term_to_idx:
-                continue
-            idx1, idx2 = term_to_idx[t1], term_to_idx[t2]
-            co_occur = sum(
-                1 for s in range(tfidf_matrix.shape[0])
-                if tfidf_matrix[s, idx1] > 0 and tfidf_matrix[s, idx2] > 0
-            )
-            if co_occur > 0:
-                weight = co_occur / n_sections
-                if weight >= 0.05:
-                    G.add_edge(t1, t2, weight=weight)
-                    if weight >= 0.1:
-                        edges.append(TopicEdge(source=t1, target=t2, weight=round(weight, 3)))
-
-    # Compute PageRank
-    try:
-        centrality = nx.pagerank(G, weight='weight')
-    except Exception:
-        centrality = {t: 1.0 / len(freq_scores) for t in freq_scores}
-
-    # Normalize centrality to [0, 1]
-    max_cent = max(centrality.values()) if centrality else 1.0
-    norm_centrality = {t: centrality.get(t, 0) / max_cent for t in freq_scores}
-
-    print(f"[ANALYZE] PageRank computed: {len(centrality)} nodes, {G.number_of_edges()} edges")
-
-    # === STEP 5: Composite Importance Score ===
-    # importance = 0.30*frequency + 0.25*spread + 0.20*heading + 0.25*centrality
-    composite = {}
-    for term in freq_scores:
-        composite[term] = (
-            0.30 * norm_freq.get(term, 0) +
-            0.25 * spread_scores.get(term, 0) +
-            0.20 * norm_heading.get(term, 0) +
-            0.25 * norm_centrality.get(term, 0)
-        )
-
-    # Sort by composite score, take top 20
-    sorted_topics_pre = sorted(composite.items(), key=lambda x: x[1], reverse=True)
-    
-    # Duplicate topic normalization: group by stem
-    def simple_stem(word):
-        word = word.lower()
-        for suffix in ['ing', 'tion', 'ions', 'ings', 'ers', 'ies', 'es', 's']:
-            if word.endswith(suffix) and len(word) - len(suffix) > 3:
-                return word[:-len(suffix)]
-        return word
-
-    stems = {}
-    for topic, score in sorted_topics_pre:
-        stem = simple_stem(topic)
-        if stem in stems:
-            # keep whichever is longer (more specific)
-            if len(topic) > len(stems[stem]):
-                stems[stem] = topic
-        else:
-            stems[stem] = topic
-    deduplicated_topics = list(stems.values())
-    
-    # Filter composite to deduplicated topics
-    composite = {k: v for k, v in composite.items() if k in deduplicated_topics}
-    
-    # Exam signal boost
-    for term in composite:
-        exam_signal_count = 0
-        for sec in sections:
-            sec_lower = sec.lower()
-            if term.lower() in sec_lower:
-                if sec_lower.startswith("definition:") or sec_lower.startswith("key definition") or "defined as" in sec_lower:
-                    composite[term] *= 1.3
-                    exam_signal_count += 1
-                if "figure" in sec_lower or "table" in sec_lower or "diagram" in sec_lower:
-                    composite[term] *= 1.2
-                    exam_signal_count += 1
-                if "example:" in sec_lower or "case study" in sec_lower or "for example" in sec_lower:
-                    composite[term] *= 1.15
-                    exam_signal_count += 1
-        
-        if exam_signal_count > 3:
-            composite[term] *= 1.1
-            
-        # Cap the maximum importance at 1.0 after all boosts to keep normalization intact
-        composite[term] = min(composite[term], 1.0)
-        
-    sorted_topics = sorted(composite.items(), key=lambda x: x[1], reverse=True)[:20]
-
-    print(f"[ANALYZE] Composite scores computed. Top 5: {[(t, round(s, 3)) for t, s in sorted_topics[:5]]}")
-
-    if not sorted_topics:
-        print("[ANALYZE] ABORT: no topics after composite scoring")
-        return AnalyzeResponse(topics=[], edges=[], headings=headings)
-
-    # Normalize composite to [0, 1]
-    max_composite = sorted_topics[0][1]
-
-    topics = []
-    for term, score in sorted_topics:
-        norm_score = round(score / max_composite, 3) if max_composite > 0 else 0
-        is_heading = any(w in heading_terms for w in term.lower().split())
-        # Tier classification
-        if norm_score > 0.55:
-            tier = "core"
-        elif norm_score > 0.3:
-            tier = "supporting"
-        else:
-            tier = "minor"
-
-        topics.append(TopicNode(
-            term=term,
-            score=norm_score,
-            is_heading=is_heading,
-            spread=round(spread_scores.get(term, 0), 3),
-            centrality=round(norm_centrality.get(term, 0), 3),
-            tier=tier
-        ))
-
-    # Study Priority: Top 5 importance as proportion of total
-    total_importance = sum(topic.score for topic in topics)
-    top5_importance = sum(topic.score for topic in sorted(topics, key=lambda x: x.score, reverse=True)[:5])
-    if total_importance == 0:
-        print("Warning: total_importance is 0")
-        coverage = 0
-        study_priority = "Top 5 topics cover ~0% of this document"
-    else:
-        coverage = (top5_importance / total_importance) * 100
-        study_priority = f"Top 5 topics cover ~{round(coverage)}% of this document"
-
-    print(f"[ANALYZE] Final: {len(topics)} topics, {len(edges)} edges, priority: {study_priority}")
-
-    return AnalyzeResponse(
-        topics=topics,
-        edges=edges,
-        headings=headings,
-        study_priority=study_priority
-    )
-
-
-# ==========================================
-# === Async LLM Topic Extraction (SSE) ===
-# ==========================================
-
 LLM_TOPIC_PROMPT = """You are analyzing a document to extract its most important concepts.
-Extract exactly 15-20 core topics from the text below.
+Extract 15-20 core topics from the outline and excerpts below.
 Rules:
 - Return ONLY specific named concepts, not generic vocabulary
 - Bad examples: "performance", "model", "service", "data", "system", "process", "approach", "method", "high", "large"
 - Good examples: domain-specific named concepts, acronyms, proper technical terms, named frameworks, named algorithms, named theories, named events, named entities
+- Use the exact wording the document uses, so each topic can be found in the text
 - Each topic must be something worth knowing about this document specifically — if it could appear in any document on any topic, it is too generic
-- If the document is technical: return specific technologies, protocols, algorithms, architectures
-- If the document is scientific: return specific phenomena, theories, methods, named experiments
-- If the document is legal/business: return specific clauses, frameworks, regulations, named processes
-- If the document is historical/general: return specific events, figures, movements, named concepts
-- Return a JSON array only, no explanation, no markdown, no backticks
-["topic1", "topic2", ...]
+Return a JSON object of the form {{"topics": ["topic1", "topic2", ...]}} and nothing else.
 
-Document text:
+Document:
 ---
 {text}
 ---"""
 
+QUIZ_PROMPT = """You are writing one quiz question to check whether a student understands the concept "{concept}" from their study material.
+Use ONLY the context below.
+Rules:
+- Ask about meaning, purpose, or how it relates to something else in the context — not trivia like page numbers.
+- The question must be answerable in 1-3 sentences from the context alone.
+- Do not reveal the answer in the question.
+Return a JSON object: {{"question": "...", "answer": "a concise model answer grounded in the context"}}
 
-class LLMTopicRequest(BaseModel):
+Context:
+---
+{context}
+---"""
+
+GRADE_PROMPT = """You are grading a student's answer against their study material.
+Question: {question}
+Reference answer: {reference}
+Supporting context:
+---
+{context}
+---
+Student answer: {answer}
+
+Judge factual correctness against the reference answer and the context. Accept different wording when the meaning is right. Give partial credit for partially correct answers. Ignore spelling and grammar.
+Return a JSON object: {{"score": <number from 0 to 1>, "feedback": "<one or two sentences: what was right and what was missing>"}}"""
+
+
+# ==========================
+# === Request models
+# ==========================
+
+class DocRequest(BaseModel):
+    doc_id: str
+
+
+class IngestRequest(BaseModel):
     text: str
-    existing_topics: List[dict] = []  # Current TF-IDF topics [{term, score, ...}]
-    existing_edges: List[dict] = []   # Current edges
+    filename: str | None = None
+
+
+class ChatRequest(BaseModel):
+    question: str
+    doc_id: str
+    session_id: str | None = None
+
+
+class QuizRequest(BaseModel):
+    concept: str | None = None
+
+
+class AnswerRequest(BaseModel):
+    answer: str
+
+
+# ==========================
+# === Document storage
+# ==========================
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _load_documents() -> None:
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    for path in DOCS_DIR.glob("*.json"):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            log.exception("Skipping unreadable document record %s", path.name)
+            continue
+        documents[doc["doc_id"]] = doc
+        hash_index[doc["content_hash"]] = doc["doc_id"]
+    log.info("Loaded %d saved documents", len(documents))
+
+
+_load_documents()
+
+
+def _get_doc(doc_id: str) -> dict:
+    doc = documents.get(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found. Upload it again to continue.")
+    return doc
+
+
+def _index_chunks(doc: dict):
+    texts = [c["text"] for c in doc["chunks"]]
+    embeddings = embedder.encode(texts, batch_size=32).tolist()
+    try:
+        chroma_client.delete_collection(doc["doc_id"])
+    except Exception:
+        pass  # nothing to replace
+    collection = chroma_client.create_collection(name=doc["doc_id"], metadata={"hnsw:space": "cosine"})
+    collection.add(
+        documents=texts,
+        embeddings=embeddings,
+        ids=[f"chunk_{i}" for i in range(len(texts))],
+        metadatas=[{"chunk_index": i, "page_start": c["page_start"], "page_end": c["page_end"]}
+                   for i, c in enumerate(doc["chunks"])],
+    )
+    return collection
+
+
+def _collection(doc: dict):
+    try:
+        return chroma_client.get_collection(doc["doc_id"])
+    except Exception:
+        log.warning("Vector index for %s missing; rebuilding from the saved document", doc["doc_id"])
+        return _index_chunks(doc)
+
+
+def _ingest(pages: list[str], headings: list[dict], kind: str, filename: str | None,
+            content_hash: str) -> tuple[dict, bool]:
+    """Index a document, or return the saved copy if this exact content was uploaded before
+    (which also restores the learner's mastery progress for it)."""
+    with _ingest_lock:
+        existing = hash_index.get(content_hash)
+        if existing in documents:
+            doc = documents[existing]
+            _collection(doc)
+            return doc, True
+
+        # Retrieval uses the same cleaned text as the analysis: no running headers, page numbers or TOC lines.
+        chunks = rag.chunk_pages(analysis.clean_pages(pages))
+        if not chunks:
+            raise HTTPException(status_code=422, detail="There isn't enough text in this document to index.")
+        doc = {
+            "doc_id": f"doc_{uuid.uuid4().hex[:12]}",
+            "filename": filename,
+            "kind": kind,
+            "content_hash": content_hash,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "pages": pages,
+            "headings": headings,
+            "chunks": chunks,
+        }
+        _index_chunks(doc)
+        _write_json(DOCS_DIR / f"{doc['doc_id']}.json", doc)
+        documents[doc["doc_id"]] = doc
+        hash_index[content_hash] = doc["doc_id"]
+        log.info("Indexed %s (%s): %d pages, %d chunks", doc["doc_id"], filename, len(pages), len(chunks))
+        return doc, False
+
+
+def _doc_summary(doc: dict, reused: bool) -> dict:
+    return {
+        "doc_id": doc["doc_id"],
+        "filename": doc["filename"],
+        "kind": doc["kind"],
+        "pages": len(doc["pages"]),
+        "chars": sum(len(p) for p in doc["pages"]),
+        "headings_count": len(doc["headings"]),
+        "chunks_count": len(doc["chunks"]),
+        "reused": reused,
+    }
+
+
+def _extract_pdf(content: bytes) -> tuple[list[str], list[dict]]:
+    """Page texts plus tiered headings (by font size relative to body text)."""
+    try:
+        pdf = pymupdf.open(stream=content, filetype="pdf")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Couldn't open this file as a PDF. It may be corrupted.") from e
+    with pdf:
+        if pdf.needs_pass:
+            raise HTTPException(status_code=400,
+                                detail="This PDF is password-protected. Remove the password and upload it again.")
+        pages, lines = [], []
+        for number, page in enumerate(pdf, start=1):
+            pages.append(page.get_text("text"))
+            for block in page.get_text("dict").get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                    if spans:
+                        lines.append((" ".join(s["text"].strip() for s in spans),
+                                      max(s.get("size", 0) for s in spans), number))
+    return pages, analysis.classify_headings(lines)
+
+
+# ==========================
+# === Analysis cache
+# ==========================
+
+def _analysis(doc: dict) -> dict:
+    doc_id = doc["doc_id"]
+    with _locks_guard:
+        lock = _analysis_locks.setdefault(doc_id, threading.Lock())
+    with lock:
+        state = _analysis_cache.get(doc_id)
+        if state is None:
+            ctx = analysis.build_context(doc["pages"], doc["headings"], doc["kind"])
+            concepts = analysis.analyze_concepts(ctx)
+            state = {"ctx": ctx, "concepts": concepts, "llm_refined": False, "llm": None,
+                     "path": learning.build_learning_path(ctx, concepts["topics"])}
+            _analysis_cache[doc_id] = state
+        return state
+
+
+def _apply_llm_topics(doc: dict, terms: list[str]) -> dict:
+    state = _analysis(doc)
+    with _analysis_locks[doc["doc_id"]]:
+        if not state["llm_refined"]:
+            concepts = analysis.merge_llm_topics(state["ctx"], state["concepts"]["topics"], terms)
+            state["llm"] = concepts.pop("llm")
+            state["concepts"] = concepts
+            state["path"] = learning.build_learning_path(state["ctx"], concepts["topics"])
+            state["llm_refined"] = True
+    return state
+
+
+def _mastery_payload(doc_id: str, topics: list[dict]) -> dict:
+    states = mastery_store.states(doc_id, [t["term"] for t in topics])
+    return {
+        "concepts": {term: mastery.public_state(s) for term, s in states.items()},
+        "summary": mastery.summarize(topics, states),
+    }
+
+
+def _analysis_payload(doc_id: str, state: dict) -> dict:
+    topics = state["concepts"]["topics"]
+    return {
+        "topics": topics,
+        "edges": state["concepts"]["edges"],
+        "study_priority": state["concepts"]["study_priority"],
+        "learning_path": state["path"],
+        "mastery": _mastery_payload(doc_id, topics),
+        "llm_refined": state["llm_refined"],
+        "llm": state["llm"],
+    }
+
+
+# ==========================
+# === Retrieval
+# ==========================
+
+def _bm25(doc: dict) -> rag.BM25:
+    index = _bm25_cache.get(doc["doc_id"])
+    if index is None:
+        index = rag.BM25([rag.tokenize(c["text"]) for c in doc["chunks"]])
+        _bm25_cache[doc["doc_id"]] = index
+    return index
+
+
+def _retrieve(doc: dict, query: str, k: int = RETRIEVE_K) -> list[dict]:
+    """Hybrid retrieval: dense (embeddings) and keyword (BM25) candidates fused with reciprocal rank fusion."""
+    chunks = doc["chunks"]
+    n = min(CANDIDATE_K, len(chunks))
+    result = _collection(doc).query(query_embeddings=[embedder.encode(query).tolist()], n_results=n)
+    dense = [int(i.split("_")[1]) for i in result["ids"][0]]
+    keyword = _bm25(doc).top(rag.tokenize(query), n)
+    fused = rag.reciprocal_rank_fusion([dense, keyword])[:k]
+    return [{
+        "index": idx,
+        "text": chunks[idx]["text"],
+        "label": rag.source_label(chunks[idx], doc["kind"], idx),
+        "page_start": chunks[idx]["page_start"] if doc["kind"] == "pdf" else None,
+        "dense_rank": dense.index(idx) + 1 if idx in dense else None,
+        "keyword_rank": keyword.index(idx) + 1 if idx in keyword else None,
+    } for idx, _ in fused]
+
+
+def _similarity(a: str, b: str) -> float:
+    vectors = embedder.encode([a, b], normalize_embeddings=True)
+    return float(vectors[0] @ vectors[1])
+
+
+# ==========================
+# === Ollama
+# ==========================
+
+class OllamaError(Exception):
+    """An Ollama failure with a message that is safe to show the user."""
+
+
+def _ollama_error(status_code: int, body: bytes) -> OllamaError:
+    try:
+        message = json.loads(body).get("error", "")
+    except (json.JSONDecodeError, AttributeError):
+        message = ""
+    if "not found" in message:
+        return OllamaError(f"The model '{OLLAMA_MODEL}' isn't installed. Run: ollama pull {OLLAMA_MODEL}")
+    log.error("Ollama returned %s: %s", status_code, body[:300])
+    return OllamaError(f"The local model returned an error ({status_code}). Check the Ollama logs.")
+
+
+def _ollama_payload(messages: list[dict], stream: bool, **options) -> dict:
+    return {"model": OLLAMA_MODEL, "messages": messages, "stream": stream,
+            "options": {"num_ctx": NUM_CTX, **options}}
+
+
+async def _ollama_chat(messages: list[dict], fmt: str | None = None, timeout: float = 180, **options) -> str:
+    payload = _ollama_payload(messages, stream=False, **options)
+    if fmt:
+        payload["format"] = fmt
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5)) as client:
+        response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+    if response.status_code != 200:
+        raise _ollama_error(response.status_code, response.content)
+    return response.json().get("message", {}).get("content", "")
+
+
+async def _ollama_stream(messages: list[dict]):
+    payload = _ollama_payload(messages, stream=True, num_predict=MAX_ANSWER_TOKENS, stop=["\nUser:"])
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5)) as client:
+        async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as response:
+            if response.status_code != 200:
+                raise _ollama_error(response.status_code, await response.aread())
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("error"):
+                    raise OllamaError(f"The local model stopped with an error: {data['error']}")
+                token = data.get("message", {}).get("content", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    return
+
+
+def _friendly_llm_error(e: Exception) -> str:
+    if isinstance(e, OllamaError):
+        return str(e)
+    if isinstance(e, httpx.ConnectError):
+        return "Ollama is not running. Start it with: ollama serve"
+    if isinstance(e, httpx.TimeoutException):
+        return "The local model timed out. It may be overloaded; try again."
+    log.exception("Unexpected LLM failure", exc_info=e)
+    return "Something went wrong while talking to the local model."
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _sse_response(generator) -> StreamingResponse:
+    return StreamingResponse(generator, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ==========================
+# === Endpoints: documents
+# ==========================
+
+@app.get("/")
+async def serve_ui():
+    return FileResponse(BASE_DIR / "index.html")
+
+
+@app.get("/health")
+async def health_check():
+    reachable = False
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            reachable = (await client.get(f"{OLLAMA_URL}/api/tags")).status_code == 200
+    except httpx.HTTPError:
+        pass
+    return {"status": "healthy", "documents": len(documents), "ollama_url": OLLAMA_URL,
+            "ollama_model": OLLAMA_MODEL, "ollama_reachable": reachable, "num_ctx": NUM_CTX,
+            "embed_device": EMBED_DEVICE}
+
+
+@app.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Extract a PDF's pages and headings, then index it for retrieval."""
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported here.")
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"PDF is larger than {MAX_UPLOAD_BYTES // 2**20} MB.")
+    pages, headings = await run_in_threadpool(_extract_pdf, content)
+    if not any(p.strip() for p in pages):
+        raise HTTPException(status_code=422, detail="No text could be extracted. This looks like a scanned or "
+                                                    "image-only PDF, and OCR isn't supported yet.")
+    doc, reused = await run_in_threadpool(_ingest, pages, headings, "pdf", file.filename,
+                                          hashlib.sha256(content).hexdigest())
+    return _doc_summary(doc, reused)
+
+
+@app.post("/ingest")
+async def ingest_text(request: IngestRequest):
+    """Index pasted text or a .txt file."""
+    text = request.text.strip()
+    if len(text) < 20:
+        raise HTTPException(status_code=400, detail="Text is too short to index (minimum 20 characters).")
+    if len(text.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Text is larger than {MAX_UPLOAD_BYTES // 2**20} MB.")
+    doc, reused = await run_in_threadpool(_ingest, [text], [], "text", request.filename,
+                                          hashlib.sha256(text.encode("utf-8")).hexdigest())
+    return _doc_summary(doc, reused)
+
+
+@app.post("/analyze")
+def analyze_document(request: DocRequest):
+    """Concept graph, learning path and mastery for a document (computed once, then cached)."""
+    doc = _get_doc(request.doc_id)
+    return _analysis_payload(doc["doc_id"], _analysis(doc))
 
 
 @app.post("/analyze-llm")
-async def analyze_llm_topics(request: LLMTopicRequest):
-    """Async LLM topic extraction — returns SSE stream that emits merged topics when ready"""
+async def analyze_llm_topics(request: DocRequest):
+    """Background LLM refinement: the model nominates concepts, the measurement engine scores them (SSE)."""
+    doc = _get_doc(request.doc_id)
 
     async def generate():
         try:
-            # Truncate text for LLM context window (phi3 handles ~4K tokens well)
-            doc_text = request.text[:8000]
-            prompt = LLM_TOPIC_PROMPT.format(text=doc_text)
-
-            print(f"[LLM-TOPICS] Sending {len(doc_text)} chars to Ollama...")
-
-            # Call Ollama non-streaming for JSON response
-            async with httpx.AsyncClient(timeout=120) as client:
-                response = await client.post(
-                    f"{OLLAMA_URL}/api/chat",
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ],
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.3,
-                            "stop": ["User:", "Question:"]
-                        }
-                    }
-                )
-                data = response.json()
-                raw_answer = data.get("message", {}).get("content", "")
-
-            print(f"[LLM-TOPICS] Raw response: {raw_answer[:300]}")
-
-            # Parse JSON safely
-            llm_topics = _parse_llm_topics(raw_answer)
-
-            if not llm_topics:
-                print("[LLM-TOPICS] No valid topics parsed, falling back")
-                yield f"data: {json.dumps({'status': 'fallback', 'reason': 'No valid JSON from LLM'})}\n\n"
-                return
-
-            print(f"[LLM-TOPICS] Parsed {len(llm_topics)} topics: {llm_topics[:5]}...")
-
-            # Merge with existing TF-IDF topics
-            existing = request.existing_topics
-            existing_edges = request.existing_edges
-            merged = _merge_llm_topics(existing, llm_topics, existing_edges)
-
-            yield f"data: {json.dumps({'status': 'success', 'topics': merged['topics'], 'edges': merged['edges'], 'study_priority': merged['study_priority']})}\n\n"
-
-        except httpx.ConnectError:
-            print("[LLM-TOPICS] Ollama not reachable")
-            yield f"data: {json.dumps({'status': 'fallback', 'reason': 'Ollama not running'})}\n\n"
-        except httpx.TimeoutException:
-            print("[LLM-TOPICS] Ollama timeout")
-            yield f"data: {json.dumps({'status': 'fallback', 'reason': 'LLM timeout'})}\n\n"
+            state = await run_in_threadpool(_analysis, doc)
+            if not state["llm_refined"]:
+                digest = analysis.build_llm_digest(state["ctx"])
+                raw = await _ollama_chat([{"role": "user", "content": LLM_TOPIC_PROMPT.format(text=digest)}],
+                                         fmt="json", temperature=0.3)
+                terms = analysis.parse_llm_topics(raw)
+                if not terms:
+                    yield _sse({"status": "fallback", "reason": "The model didn't return a usable topic list."})
+                    return
+                state = await run_in_threadpool(_apply_llm_topics, doc, terms)
+            yield _sse({"status": "success", **_analysis_payload(doc["doc_id"], state)})
         except Exception as e:
-            print(f"[LLM-TOPICS] Error: {e}")
-            yield f"data: {json.dumps({'status': 'fallback', 'reason': str(e)})}\n\n"
+            yield _sse({"status": "fallback", "reason": _friendly_llm_error(e)})
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    return _sse_response(generate())
 
 
-def _parse_llm_topics(raw: str) -> List[str]:
-    """Safely extract a JSON array of topic strings from LLM output"""
-    # Try direct parse
-    try:
-        parsed = json.loads(raw.strip())
-        if isinstance(parsed, list):
-            return [str(t).strip() for t in parsed if isinstance(t, str) and len(t.strip()) > 1]
-    except json.JSONDecodeError:
-        pass
-
-    # Try extracting JSON array from markdown/wrapper text
-    match = re.search(r'\[\s*"[^"]+"(?:\s*,\s*"[^"]+")*\s*\]', raw, re.DOTALL)
-    if match:
-        try:
-            parsed = json.loads(match.group())
-            if isinstance(parsed, list):
-                return [str(t).strip() for t in parsed if isinstance(t, str) and len(t.strip()) > 1]
-        except json.JSONDecodeError:
-            pass
-
-    print(f"[LLM-TOPICS] Failed to parse JSON from: {raw[:200]}")
-    return []
+@app.get("/documents/{doc_id}/concept")
+def concept_details(doc_id: str, term: str):
+    """Evidence for one concept: score breakdown, definitions, mentions, prerequisites, mastery."""
+    doc = _get_doc(doc_id)
+    state = _analysis(doc)
+    topic = learning.find_topic(state["concepts"]["topics"], term)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"'{term}' isn't in this document's concept map.")
+    details = learning.concept_evidence(state["ctx"], topic, state["path"])
+    details["mastery"] = mastery.public_state(mastery_store.states(doc_id, [topic["term"]])[topic["term"]])
+    return details
 
 
-def _merge_llm_topics(existing_topics: List[dict], llm_topics: List[str], existing_edges: List[dict]) -> dict:
-    """Merge LLM-extracted topics with existing TF-IDF topics"""
-    # Build lookup of existing topics (case-insensitive)
-    existing_map = {}
-    for t in existing_topics:
-        existing_map[t['term'].lower()] = t
+@app.get("/documents/{doc_id}/relation")
+def relation_details(doc_id: str, a: str, b: str):
+    """Evidence for a graph edge: where the two concepts appear together."""
+    doc = _get_doc(doc_id)
+    state = _analysis(doc)
+    topics = state["concepts"]["topics"]
+    ta, tb = learning.find_topic(topics, a), learning.find_topic(topics, b)
+    if ta is None or tb is None:
+        raise HTTPException(status_code=404, detail="Both concepts must be in this document's concept map.")
+    return learning.relation_evidence(state["ctx"], ta["term"], tb["term"], state["path"])
 
-    merged = list(existing_topics)  # Start with all existing
-    new_count = 0
 
-    for llm_term in llm_topics:
-        llm_lower = llm_term.lower().strip()
+@app.get("/documents/{doc_id}/mastery")
+def get_mastery(doc_id: str):
+    doc = _get_doc(doc_id)
+    return _mastery_payload(doc_id, _analysis(doc)["concepts"]["topics"])
 
-        # Check if already exists (case-insensitive)
-        if llm_lower in existing_map:
-            # Boost existing topic's score by 2x (LLM validated)
-            for i, t in enumerate(merged):
-                if t['term'].lower() == llm_lower:
-                    merged[i] = dict(t)
-                    merged[i]['score'] = min(1.0, round(t['score'] * 2.0, 3))
-                    # Upgrade tier if boosted above threshold
-                    if merged[i]['score'] > 0.55:
-                        merged[i]['tier'] = 'core'
-                    elif merged[i]['score'] > 0.3:
-                        merged[i]['tier'] = 'supporting'
-                    break
-            continue
 
-        # Check for partial match (substring)
-        partial_match = False
-        for existing_lower in existing_map:
-            if llm_lower in existing_lower or existing_lower in llm_lower:
-                partial_match = True
-                break
+# ==========================
+# === Endpoints: chat
+# ==========================
 
-        if partial_match:
-            continue
+def _session(session_id: str | None, doc_id: str) -> dict:
+    sid = session_id or str(uuid.uuid4())
+    session = sessions.get(sid)
+    if session is None or session["doc_id"] != doc_id:
+        session = {"id": sid, "doc_id": doc_id, "messages": []}
+        sessions[sid] = session
+    sessions.move_to_end(sid)
+    while len(sessions) > MAX_SESSIONS:
+        sessions.popitem(last=False)
+    return session
 
-        # New topic from LLM — add with moderate score
-        new_count += 1
-        merged.append({
-            'term': llm_term,
-            'score': 0.55,  # Supporting tier
-            'is_heading': False,
-            'spread': 0.0,
-            'centrality': 0.0,
-            'tier': 'supporting'
-        })
 
-    # Re-sort by score and take top 25 (expanded from 20)
-    merged.sort(key=lambda t: t['score'], reverse=True)
-    merged = merged[:25]
+def _remember(session: dict, question: str, answer: str) -> None:
+    session["messages"].append({"role": "user", "content": question})
+    if answer:
+        session["messages"].append({"role": "assistant", "content": answer})
+    del session["messages"][:-HISTORY_MESSAGES * 2]
 
-    # Recalculate study priority
-    total_importance = sum(t['score'] for t in merged)
-    top5_importance = sum(t['score'] for t in merged[:5])
-    coverage_pct = round(top5_importance / total_importance * 100) if total_importance > 0 else 0
-    study_priority = f"Top 5 topics cover ~{coverage_pct}% of this document"
 
-    print(f"[LLM-TOPICS] Merged: {len(merged)} topics ({new_count} new from LLM), priority: {study_priority}")
+def _record_question_exposure(doc: dict, question: str) -> None:
+    state = _analysis_cache.get(doc["doc_id"])
+    if state:
+        terms = [t["term"] for t in state["concepts"]["topics"] if analysis.term_regex(t["term"]).search(question)]
+        if terms:
+            mastery_store.record_exposure(doc["doc_id"], terms)
 
-    return {
-        'topics': merged,
-        'edges': existing_edges,  # Keep existing edges (LLM topics won't have co-occurrence data)
-        'study_priority': study_priority
-    }
+
+def _chat_messages(doc: dict, session: dict, question: str, sources: list[dict]) -> list[dict]:
+    example = "[p. 4]" if doc["kind"] == "pdf" else "[Excerpt 2]"
+    system = LEXO_SYSTEM_PROMPT.format(example=example)
+    user = (f"Document excerpts:\n\n{rag.build_context_block(sources)}\n\n---\n\n"
+            f"User's question: {question}")
+    # Ollama silently truncates from the start of the prompt when it overflows num_ctx,
+    # which would drop the system prompt first. Budget the history so that never happens.
+    budget = int((NUM_CTX - MAX_ANSWER_TOKENS) * CHARS_PER_TOKEN) - len(system) - len(user)
+    history = rag.fit_history(session["messages"][-HISTORY_MESSAGES:], max(0, budget))
+    return [{"role": "system", "content": system}, *history, {"role": "user", "content": user}]
 
 
 @app.post("/chat-stream")
 async def chat_stream(request: ChatRequest):
-    """RAG-powered chat with streaming response via Server-Sent Events"""
+    """Hybrid retrieval + streamed answer with page citations (SSE)."""
+    doc = _get_doc(request.doc_id)
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Ask a question first.")
+    session = _session(request.session_id, doc["doc_id"])
 
-    if not RAG_SUPPORT:
-        raise HTTPException(status_code=503, detail="RAG components not available")
+    if rag.is_small_talk(question):
+        reply = rag.small_talk_reply(question)
 
-    session_id = request.session_id or str(uuid.uuid4())
-    doc_id = request.doc_id
+        async def small_talk():
+            yield _sse({"token": reply})
+            _remember(session, question, reply)
+            yield _sse({"done": True, "session_id": session["id"]})
 
-    if not doc_id or doc_id not in document_store:
-        raise HTTPException(status_code=400, detail="No document indexed. Upload a document first.")
+        return _sse_response(small_talk())
 
-    # Initialize session if new
-    if session_id not in session_store:
-        session_store[session_id] = {
-            "doc_id": doc_id,
-            "messages": []
-        }
-    elif session_store[session_id].get("doc_id") != doc_id:
-        session_store[session_id]["doc_id"] = doc_id
-        session_store[session_id]["messages"] = []
+    sources = await run_in_threadpool(_retrieve, doc, question)
+    await run_in_threadpool(_record_question_exposure, doc, question)
+    messages = _chat_messages(doc, session, question, sources)
 
-    # 0. Check for greeting / non-question
-    question_words = ["what", "how", "why", "where", "when", "explain", "tell", "describe"]
-    question_lower = request.question.lower().strip()
-    words = question_lower.split()
-    
-    greetings = ["hello", "hi", "hey", "thanks", "thank you", "morning", "good morning", "good evening", "good afternoon"]
-    q_clean = "".join(c for c in question_lower if c.isalnum() or c.isspace()).strip()
-    
-    is_greeting = any(q_clean == g for g in greetings)
-    is_short_non_question = len(words) < 4 and not any(qw in question_lower for qw in question_words)
-    
-    if is_greeting or is_short_non_question:
-        greeting_response = "Hey! I'm Lexo, your document analyst. Ask me anything about the document you've uploaded!"
-        
-        async def generate_greeting():
-            yield f"data: {json.dumps({'token': greeting_response})}\n\n"
-            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
-            
-            session_store[session_id]["messages"].append({"role": "user", "content": request.question})
-            session_store[session_id]["messages"].append({"role": "assistant", "content": greeting_response})
-            
-        return StreamingResponse(
-            generate_greeting(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-
-    # 1. Embed the question
-    query_embedding = embedder.encode(request.question).tolist()
-
-    # 2. Retrieve top-5 chunks from ChromaDB
-    try:
-        collection = chroma_client.get_collection(name=doc_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Document collection not found")
-
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=5
-    )
-
-    chunks = results["documents"][0]
-    distances = results["distances"][0]
-
-    # 3. Normalize cosine distance to similarity score [0, 1]
-    # ChromaDB cosine distance range: [0, 2] → similarity: [1, 0]
-    similarities = [1 - (d / 2) for d in distances]
-
-    # 4. Query-aware topic boost
-    doc_data = document_store[doc_id]
-    top_topics = doc_data.get("top_topics", [])
-    question_lower = request.question.lower()
-    query_has_topic = any(topic in question_lower for topic in top_topics)
-
-    scored_chunks = list(zip(chunks, similarities))
-
-    if query_has_topic:
-        boosted = []
-        for chunk, sim in scored_chunks:
-            chunk_lower = chunk.lower()
-            topic_count = sum(1 for t in top_topics[:5] if t in chunk_lower)
-            boost = min(topic_count * 0.05, 0.15)  # Max 0.15 boost
-            boosted.append((chunk, sim + boost))
-        boosted.sort(key=lambda x: x[1], reverse=True)
-        chunks = [b[0] for b in boosted]
-    else:
-        chunks = [c[0] for c in scored_chunks]
-
-    # 5. Build augmented prompt
-    context = "\n\n---\n\n".join(chunks)
-
-    # Build messages for Ollama
-    messages = [{"role": "system", "content": LEXO_SYSTEM_PROMPT}]
-    print(f"[CHAT-STREAM] System Prompt (first 100 chars): {LEXO_SYSTEM_PROMPT[:100]}")
-
-    # Add recent conversation history (last 10 messages = 5 turns)
-    history = session_store[session_id]["messages"][-10:]
-    messages.extend(history)
-
-    # Add current question with retrieved context
-    user_message = f"Here are relevant sections from the document:\n\n{context}\n\n---\n\nUser's question: {request.question}"
-    messages.append({"role": "user", "content": user_message})
-
-    # 6. Stream from Ollama
     async def generate():
-        full_response = ""
+        answer = []
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                async with client.stream(
-                    "POST",
-                    f"{OLLAMA_URL}/api/chat",
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "messages": messages,
-                        "stream": True,
-                        "options": {
-                            "stop": ["User:", "Question:"]
-                        }
-                    }
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            data = json.loads(line)
-                            token = data.get("message", {}).get("content", "")
-                            if token:
-                                full_response += token
-                                yield f"data: {json.dumps({'token': token})}\n\n"
-                            if data.get("done"):
-                                yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
-                        except json.JSONDecodeError:
-                            continue
-
-        except httpx.ConnectError:
-            yield f"data: {json.dumps({'error': 'Ollama is not running. Start it with: ollama serve'})}\n\n"
-        except httpx.TimeoutException:
-            yield f"data: {json.dumps({'error': 'Response timed out. The model may be overloaded.'})}\n\n"
+            yield _sse({"sources": [{k: s[k] for k in ("label", "text", "page_start", "dense_rank", "keyword_rank")}
+                                    for s in sources]})
+            async for token in _ollama_stream(messages):
+                answer.append(token)
+                yield _sse({"token": token})
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield _sse({"error": _friendly_llm_error(e)})
+        finally:
+            _remember(session, question, "".join(answer))
+        yield _sse({"done": True, "session_id": session["id"]})
 
-        # Store in conversation history (only the raw question, not the context)
-        session_store[session_id]["messages"].append(
-            {"role": "user", "content": request.question}
-        )
-        if full_response:
-            session_store[session_id]["messages"].append(
-                {"role": "assistant", "content": full_response}
-            )
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    return _sse_response(generate())
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat_non_stream(request: ChatRequest):
-    """Non-streaming chat fallback (used by AI Summary)"""
+# ==========================
+# === Endpoints: quiz
+# ==========================
 
-    if not RAG_SUPPORT:
-        raise HTTPException(status_code=503, detail="RAG components not available")
+def _quiz_context(evidence: dict, sources: list[dict]) -> tuple[str, list[dict]]:
+    quotes = evidence["definitions"] + evidence["mentions"]
+    lines = [f"[{q['label']}] {q['text']}" if q["label"] else q["text"] for q in quotes]
+    lines += [f"[{s['label']}] {s['text']}" for s in sources]
+    return "\n\n".join(lines)[:3500], quotes[:3]
 
-    session_id = request.session_id or str(uuid.uuid4())
-    doc_id = request.doc_id
 
-    # For summary requests, use the question directly with Ollama (no retrieval)
-    messages = [
-        {"role": "system", "content": LEXO_SYSTEM_PROMPT},
-        {"role": "user", "content": request.question}
-    ]
-    print(f"[CHAT] System Prompt (first 100 chars): {LEXO_SYSTEM_PROMPT[:100]}")
+def _cloze_question(evidence: dict, term: str) -> tuple[str, dict] | None:
+    for quote in evidence["definitions"] + evidence["mentions"]:
+        question = mastery.make_cloze(quote["text"], term)
+        if question:
+            return question, quote
+    return None
 
+
+@app.post("/documents/{doc_id}/quiz")
+async def next_quiz(doc_id: str, request: QuizRequest):
+    """Generate the next quiz question, targeted at an important concept the learner hasn't mastered."""
+    doc = _get_doc(doc_id)
+    state = await run_in_threadpool(_analysis, doc)
+    topics, path = state["concepts"]["topics"], state["path"]
+    if not topics:
+        raise HTTPException(status_code=422, detail="There isn't enough content in this document to quiz on.")
+    states = mastery_store.states(doc_id, [t["term"] for t in topics])
+
+    if request.concept:
+        topic = learning.find_topic(topics, request.concept)
+        if topic is None:
+            raise HTTPException(status_code=404, detail=f"'{request.concept}' isn't in this document's concept map.")
+        reason = "You picked this concept"
+        gap = mastery.prerequisite_gap(topic["term"], states, path)
+        if gap:
+            reason += f". Tip: it builds on {', '.join(gap)}, which you haven't mastered yet"
+    else:
+        term, reason = mastery.pick_quiz_target(topics, states, path, datetime.now(timezone.utc))
+        topic = learning.find_topic(topics, term)
+    term = topic["term"]
+
+    evidence = await run_in_threadpool(learning.concept_evidence, state["ctx"], topic, path)
+    sources = await run_in_threadpool(_retrieve, doc, term, 3)
+    context, quotes = _quiz_context(evidence, sources)
+
+    quiz, generated_by, notice = None, "llm", None
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{OLLAMA_URL}/api/chat",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {
-                        "stop": ["User:", "Question:"]
-                    }
-                }
-            )
-            data = response.json()
-            answer = data.get("message", {}).get("content", "No response received")
-
-        return ChatResponse(answer=answer, session_id=session_id)
-
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Ollama is not running. Start it with: ollama serve")
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Response timed out")
+        raw = await _ollama_chat([{"role": "user", "content": QUIZ_PROMPT.format(concept=term, context=context)}],
+                                 fmt="json", timeout=120, temperature=0.4)
+        quiz = mastery.parse_quiz(raw)
+        if quiz:
+            quiz.update(kind="short", evidence=quotes)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+        notice = _friendly_llm_error(e)
+    if quiz is None:
+        cloze = _cloze_question(evidence, term)
+        if cloze is None:
+            raise HTTPException(status_code=422, detail=f"There isn't enough text about '{term}' to write a question.")
+        question, quote = cloze
+        quiz = {"kind": "cloze", "question": question, "answer": term, "evidence": [quote]}
+        generated_by = "cloze"
+
+    quiz_id = uuid.uuid4().hex
+    pending_quizzes[quiz_id] = {**quiz, "doc_id": doc_id, "concept": term, "context": context}
+    while len(pending_quizzes) > MAX_PENDING_QUIZZES:
+        pending_quizzes.popitem(last=False)
+    return {
+        "quiz_id": quiz_id,
+        "concept": term,
+        "kind": quiz["kind"],
+        "question": quiz["question"],
+        "reason": reason,
+        "generated_by": generated_by,
+        "notice": notice,
+        "mastery": mastery.public_state(states[term]),
+    }
+
+
+@app.post("/documents/{doc_id}/quiz/{quiz_id}/answer")
+async def answer_quiz(doc_id: str, quiz_id: str, request: AnswerRequest):
+    """Grade an answer, update mastery and the review schedule, and show the evidence."""
+    quiz = pending_quizzes.get(quiz_id)
+    if quiz is None or quiz["doc_id"] != doc_id:
+        raise HTTPException(status_code=404, detail="This question has expired. Start a new one.")
+    del pending_quizzes[quiz_id]
+    answer = request.answer.strip()
+    feedback = None
+
+    if not answer or mastery.is_dont_know(answer):
+        score, graded_by = 0.0, "no answer"
+        feedback = "No problem. Here's what the document says."
+    elif quiz["kind"] == "cloze":
+        score, graded_by = mastery.grade_exact(answer, quiz["answer"]), "exact match"
+    else:
+        similarity = mastery.similarity_score(await run_in_threadpool(_similarity, answer, quiz["answer"]))
+        llm_score = None
+        try:
+            prompt = GRADE_PROMPT.format(question=quiz["question"], reference=quiz["answer"],
+                                         context=quiz["context"][:2500], answer=answer[:1500])
+            llm_score, feedback = mastery.parse_grade(
+                await _ollama_chat([{"role": "user", "content": prompt}], fmt="json", timeout=120, temperature=0))
+        except Exception as e:
+            log.info("LLM grading unavailable, using embedding similarity only: %s", _friendly_llm_error(e))
+        score = mastery.blend(llm_score, similarity)
+        graded_by = "llm + embedding similarity" if llm_score is not None else "embedding similarity"
+
+    new_state = mastery_store.apply_score(doc_id, quiz["concept"], score)
+    topics = (await run_in_threadpool(_analysis, _get_doc(doc_id)))["concepts"]["topics"]
+    return {
+        "concept": quiz["concept"],
+        "score": round(score, 3),
+        "verdict": mastery.verdict(score),
+        "feedback": feedback,
+        "reference_answer": quiz["answer"],
+        "evidence": quiz["evidence"],
+        "graded_by": graded_by,
+        "mastery": mastery.public_state(new_state),
+        "summary": _mastery_payload(doc_id, topics)["summary"],
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "8000")))

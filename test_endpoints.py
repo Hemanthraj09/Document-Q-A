@@ -1,86 +1,58 @@
-"""Quick dry-run test of all backend endpoints"""
-import httpx
+"""Manual smoke test against a running server (uvicorn main:app). Unit tests live in tests/."""
 import json
+import sys
 
+import httpx
+
+sys.stdout.reconfigure(encoding="utf-8")  # answers contain emoji; the default Windows console is cp1252
 BASE = "http://localhost:8000"
-
-# 1. Health check
-print("=" * 50)
-print("1. HEALTH CHECK")
-print("=" * 50)
-r = httpx.get(f"{BASE}/health")
-health = r.json()
-print(f"Status: {r.status_code}")
-for k, v in health.items():
-    print(f"  {k}: {v}")
-
-# 2. Analyze endpoint
-print("\n" + "=" * 50)
-print("2. ANALYZE ENDPOINT (TF-IDF + Topic Extraction)")
-print("=" * 50)
-
-sample_text = """--- Page 1 ---
-Machine Learning and Deep Learning are transforming artificial intelligence.
-Neural networks have achieved state-of-the-art results in computer vision and natural language processing.
-Convolutional neural networks excel at image recognition tasks while recurrent neural networks handle sequential data.
-Transfer learning allows pre-trained models to be fine-tuned for specific downstream tasks.
-
---- Page 2 ---
-Natural language processing has seen revolutionary advances with transformer architectures.
-BERT and GPT models use self-attention mechanisms to understand contextual relationships in text.
-Large language models trained on massive datasets demonstrate few-shot learning capabilities.
-Text classification, sentiment analysis, and question answering are common NLP applications.
-
---- Page 3 ---
-Computer vision applications include object detection, image segmentation, and facial recognition.
-Deep learning models like ResNet and EfficientNet have pushed accuracy benchmarks higher.
-Data augmentation techniques help prevent overfitting when training data is limited.
-Transfer learning from ImageNet pre-trained models accelerates training convergence.
-"""
-
-headings = [
-    "Machine Learning and Deep Learning",
-    "Natural Language Processing",
-    "Computer Vision",
-]
-
-r = httpx.post(
-    f"{BASE}/analyze",
-    json={"text": sample_text, "headings": headings},
-    timeout=30,
+SAMPLE = (
+    "A loss function is a measure of how wrong a model's predictions are on the training data. "
+    "Gradient descent is an optimization algorithm that minimizes a loss function by following its gradient. "
+    "A neural network is a model made of layers of neurons. Neural networks are trained with gradient descent. "
+    "Overfitting is when a neural network memorizes the training data instead of learning general patterns. "
+    "Regularization is a technique that adds a penalty to the loss function to reduce overfitting."
 )
-data = r.json()
-print(f"Status: {r.status_code}")
-topics = data.get("topics", [])
-edges = data.get("edges", [])
-print(f"Topics found: {len(topics)}")
-for t in topics[:10]:
-    flag = " [HEADING]" if t["is_heading"] else ""
-    print(f"  {t['term']:30s}  score={t['score']}{flag}")
-print(f"\nEdges found: {len(edges)}")
-for e in edges[:8]:
-    print(f"  {e['source']:25s} <-> {e['target']:25s}  weight={e['weight']}")
 
-# 3. Chat endpoint (expects LangFlow)
-print("\n" + "=" * 50)
-print("3. CHAT ENDPOINT (LangFlow proxy)")
-print("=" * 50)
-try:
-    r = httpx.post(
-        f"{BASE}/chat",
-        json={"question": "Hello, what is machine learning?", "session_id": "test-dry-run"},
-        timeout=15,
-    )
-    print(f"Status: {r.status_code}")
-    resp = r.json()
-    if r.status_code == 200:
-        print(f"Answer: {resp.get('answer', '')[:200]}")
-        print(f"Session: {resp.get('session_id', '')}")
-    else:
-        print(f"Detail: {resp.get('detail', 'unknown error')}")
-except Exception as e:
-    print(f"Connection error: {e}")
 
-print("\n" + "=" * 50)
-print("DRY RUN COMPLETE")
-print("=" * 50)
+def section(title):
+    print("\n" + "=" * 50 + f"\n{title}\n" + "=" * 50)
+
+
+section("HEALTH")
+print(httpx.get(f"{BASE}/health").json())
+
+section("INGEST")
+doc = httpx.post(f"{BASE}/ingest", json={"text": SAMPLE, "filename": "smoke.txt"}, timeout=60).json()
+print(doc)
+doc_id = doc["doc_id"]
+
+section("ANALYZE (concept graph + learning path)")
+analysis = httpx.post(f"{BASE}/analyze", json={"doc_id": doc_id}, timeout=60).json()
+for t in analysis["topics"][:10]:
+    print(f"  {t['term']:25s} score={t['score']:.2f} tier={t['tier']}")
+print("  study order:", [s["term"] for s in analysis["learning_path"]["steps"]])
+
+section("CONCEPT EVIDENCE")
+top = analysis["topics"][0]["term"]
+evidence = httpx.get(f"{BASE}/documents/{doc_id}/concept", params={"term": top}).json()
+print(f"  {top}: definitions={evidence['definitions']}")
+
+section("CHAT (streamed)")
+with httpx.stream("POST", f"{BASE}/chat-stream", json={"question": "What is overfitting?", "doc_id": doc_id},
+                  timeout=120) as r:
+    for line in r.iter_lines():
+        if line.startswith("data: "):
+            event = json.loads(line[6:])
+            if "sources" in event:
+                print("  sources:", [s["label"] for s in event["sources"]])
+            print(event.get("token", ""), end="", flush=True)
+            if "error" in event:
+                print("\n  error:", event["error"])
+
+section("QUIZ")
+quiz = httpx.post(f"{BASE}/documents/{doc_id}/quiz", json={}, timeout=120).json()
+print(f"  [{quiz['kind']}] {quiz['question']}  ({quiz['reason']})")
+result = httpx.post(f"{BASE}/documents/{doc_id}/quiz/{quiz['quiz_id']}/answer",
+                    json={"answer": "It reduces overfitting by penalizing the loss."}, timeout=120).json()
+print(f"  score={result['score']} verdict={result['verdict']} mastery={result['mastery']['mastery']}")
